@@ -1,0 +1,9 @@
+How to convert MARCXML into BIBFRAMEXML:
+	Run
+		xsltproc ../marc2bibframe2/xsl/marc2bibframe2.xsl ../data/sample/sample.xml > BIBFRAME_sample.xml
+
+	Input file must have
+		xmlns="http://www.loc.gov/MARC21/slim"
+	in the collection tag
+
+	Can explicitly define idsource by adding "--stringparam idsource <URL>" as a parameter to the above command where <URL> identifiex the institution running the conversion
