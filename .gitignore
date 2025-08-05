@@ -3,3 +3,8 @@
 /test
 /test_no_match
 /test_voting
+/*/*.tsv
+/*/*.json
+*.csv
+*.numbers
+application.config
