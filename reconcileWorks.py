@@ -1,4 +1,4 @@
-import argparse, sys, os, logging, requests, csv, urllib.parse, copy, json
+import argparse, sys, os, logging, requests, csv, urllib.parse, copy, json, configparser, time
 from lxml import etree
 from enum import Enum
 
@@ -57,6 +57,9 @@ def normalizeVariant(variant):
 def getRequest(url):
 	try:
 		result = requests.get(url,timeout=60)
+		if result.status_code == 429:
+			time.sleep(60)
+			result = requests.get(url,timeout=60)
 	except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ValueError) as e:
 		logging.error(e)
 		try:
@@ -142,7 +145,7 @@ def compareTitles(target_title,candidate_titles):
 		logging.debug(normalized_value)
 	return best_fit
 
-def compareContributors(local_contributors,loc_contributors,contrubutor_cache):
+def compareContributors(local_contributors,loc_contributors,contributor_cache):
 	if len(local_contributors) > 0 and len(loc_contributors) > 0:
 		found_contributor_count = 0
 		found_contributor_value = 0
@@ -158,15 +161,15 @@ def compareContributors(local_contributors,loc_contributors,contrubutor_cache):
 			loc_agent_links = loc_contributor.xpath("./bf:agent/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
 			logging.debug(loc_agent_links)
 			if len(loc_agent_links) > 0:
-				if loc_agent_links[0] in contrubutor_cache:
-					loc_contributor_values['agent'] = contrubutor_cache[loc_agent_links[0]]
+				if loc_agent_links[0] in contributor_cache:
+					loc_contributor_values['agent'] = contributor_cache[loc_agent_links[0]]
 				else:
 					agent_tree = etree.XML(getRequest(f"{loc_agent_links[0].replace('http','https')}.rdf").content)
 					agent_label = agent_tree.xpath("/rdf:RDF/madsrdf:RWO/rdfs:label/text()",namespaces={"rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#","rdfs": "http://www.w3.org/2000/01/rdf-schema#","madsrdf": "http://www.loc.gov/mads/rdf/v1#"})
 					logging.debug(agent_label)
 					if len(agent_label) > 0:
 						loc_contributor_values['agent'] = agent_label[0]
-						contrubutor_cache[loc_agent_links[0]] = agent_label[0]
+						contributor_cache[loc_agent_links[0]] = agent_label[0]
 			else:
 				loc_agent_list = loc_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdfs": "http://www.w3.org/2000/01/rdf-schema#"})
 				if len(loc_agent_list) > 0:
@@ -246,7 +249,7 @@ def findBestMatch(matches):
 	logging.debug(best_score)
 	return (best_url, best_score_breakdown, False if best_url else True)
 
-def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_writer,contrubutor_cache,work_uri=None,candidate_hubs=None):
+def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_writer,contributor_cache,work_uri=None,candidate_hubs=None):
 	for text_string in match_fields['titles']:
 		BASE_LC_URL = 'https://id.loc.gov/search/?q='
 		ENCODED_TEXT_STRING = urllib.parse.quote_plus(text_string)
@@ -307,7 +310,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 #						logging.debug(match_fields['contributors'])
 						record_contributors = details_tree.xpath("/rdf:RDF/bf:Work/bf:contribution/bf:Contribution", namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
 #						logging.debug(record_contributors)
-						matches[found_uri]['contributors'] = compareContributors(match_fields['contributors'],record_contributors,contrubutor_cache)
+						matches[found_uri]['contributors'] = compareContributors(match_fields['contributors'],record_contributors,contributor_cache)
 						logging.debug(matches)
 
 					if len(match_fields['notes']) > 0:
@@ -365,8 +368,99 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 			output_writer.writerow([placeholder_work_id,text_string,query_url])
 			return None, None
 
-def searchForRecordWiki(placeholder_work_id,match_fields,output_writer):
-	pass
+def searchForRecordWiki(placeholder_work_id,match_fields,contributor_cache,output_writer):
+	BASE_WIKIDATA_URL = "https://www.wikidata.org/w/api.php"
+	BASE_WIKIDATA_SPARQL_URL = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
+	config = configparser.ConfigParser()
+	config.read('application.config')
+
+	best_work_score = 0
+	best_work = None
+	best_work_uri = None
+	for contributor in match_fields['contributors']:
+		split_contributor = contributor.split('$')
+		split_contributor.pop(0)
+		logging.debug(split_contributor)
+		marc_contributor = { x[0]: x[1:] for x in split_contributor }
+		logging.debug(marc_contributor)
+		if marc_contributor['a'] not in contributor_cache:
+			contributor_cache[marc_contributor['a']] = {}
+			contributor_found = False
+			if '1' in marc_contributor:
+				if 'https://id.oclc.org/worldcat/entity' in marc_contributor['1']:
+					ID_STRING = marc_contributor['1'][marc_contributor['1'].rfind('/')+1:]
+					SPARQL_QUERY = f"""SELECT ?contrib
+WHERE
+{{
+  ?contrib wdt:P10832 "{ID_STRING}"
+}}"""
+					sparql_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(SPARQL_QUERY)}"
+					query_results = json.loads(getRequest(sparql_query_url).content)
+					logging.debug(query_results)
+					if len(query_results['results']['bindings']) > 0:
+						contributor_code = query_results['results']['bindings'][0]['contrib']['value']
+						contributor_code = contributor_code[contributor_code.rfind('/')+1:]
+						contributor_found = True
+
+			if not contributor_found:
+				ENCODED_CONTRIBUTOR = urllib.parse.quote_plus(marc_contributor['a'])
+				wikidata_query = f"{BASE_WIKIDATA_URL}?action=query&list=search&srsearch={ENCODED_CONTRIBUTOR}&format=json"
+				wikidata_search = json.loads(getRequest(wikidata_query).content)
+				logging.debug(wikidata_search)
+				if len(wikidata_search['query']['search']) > 0:
+					contributor_code = wikidata_search['query']['search'][0]['title']
+				else:
+					contributor_code = None
+					logging.debug(f"Non-WorldCat Entity URL: {marc_contributor['a']}")
+			
+			if contributor_code:
+				OCCUPATION_QUERY = f"""SELECT ?occupation_properties
+WHERE
+{{
+  wd:{contributor_code} wdt:P106 ?occupations .
+  ?occupations wdt:P1687 ?occupation_properties.
+}}"""
+				logging.debug(contributor_code)
+				occupation_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(OCCUPATION_QUERY)}"
+				occupation_query_results = json.loads(getRequest(occupation_query_url).content)
+				logging.debug(occupation_query_results)
+				occupation_property = occupation_query_results['results']['bindings']
+				if len(occupation_property) > 0:
+					occupation_property = occupation_property[0]['occupation_properties']['value']
+					occupation_property = occupation_property[occupation_property.rfind('/')+1:]
+					logging.debug(occupation_property)
+					WORKS_QUERY = f"""SELECT ?works ?worksLabel
+WHERE
+{{
+  ?works wdt:{occupation_property} wd:{contributor_code} .
+  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "[AUTO_LANGUAGE],mul,en". }}
+}}"""
+					works_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(WORKS_QUERY)}"
+					works_query_results = json.loads(getRequest(works_query_url).content)
+					logging.debug(works_query_results)
+					if len(works_query_results['results']['bindings']) > 0:
+						for w in works_query_results['results']['bindings']:
+							logging.debug(w)
+							contributor_cache[marc_contributor['a']][w['works']['value']] = w['worksLabel']['value']
+
+		for found_work in contributor_cache[marc_contributor['a']]:
+			for t in match_fields['titles']:
+				l_dist = calculateLevenshteinDistance(t,contributor_cache[marc_contributor['a']][found_work])
+				if l_dist < len(t) * 0.1:
+					logging.debug(len(t) * 0.1)
+					score_value = (len(t) - l_dist)/(len(t))
+					if score_value > best_work_score:
+						best_work_score = score_value
+						best_work = contributor_cache[marc_contributor['a']][found_work]
+						best_work_uri = found_work
+
+
+	if best_work_score > 0 and best_work and best_work_uri:
+		logging.debug(f"{placeholder_work_id}, {json.dumps(match_fields)}, {best_work}, {best_work_score}, {best_work_uri}")
+		output_writer.writerow([placeholder_work_id,json.dumps(match_fields),best_work,best_work_score,best_work_uri])
+	else:
+		logging.debug(f"{placeholder_work_id}, {json.dumps(match_fields)}")
+		output_writer.writerow([placeholder_work_id,json.dumps(match_fields)])
 
 def clearBlankText(text_array):
 	return " ".join([x for x in text_array if x.strip() != ''])
@@ -384,12 +478,11 @@ def reconcileWorks(args):
 		open(f"{args.output}/{args.cache}", "w+").close()
 	
 	with open(f"{args.output}/{args.cache}",'r+') as cachefile:
-		if args.source == Sources.loc:
-			try:
-				contrubutor_cache = json.load(cachefile)
-				logging.debug(contrubutor_cache)
-			except (FileNotFoundError, json.decoder.JSONDecodeError):
-				contrubutor_cache = {}
+		try:
+			contributor_cache = json.load(cachefile)
+			logging.debug(contributor_cache)
+		except (FileNotFoundError, json.decoder.JSONDecodeError):
+			contributor_cache = {}
 
 		tree = etree.parse(args.input)
 		root = tree.getroot()
@@ -424,21 +517,31 @@ def reconcileWorks(args):
 
 					match_fields = { 'titles': search_titles, 'notes': notes, 'languages': languages, 'contributors': contributors }
 					
-					found_work_uri, found_work_associated_hubs = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/works',work_types,writer,contrubutor_cache)
-					searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/hubs',['http://id.loc.gov/ontologies/bibframe/Work','http://id.loc.gov/ontologies/bibframe/Hub'],writer,contrubutor_cache,found_work_uri,found_work_associated_hubs)
+					found_work_uri, found_work_associated_hubs = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/works',work_types,writer,contributor_cache)
+					searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/hubs',['http://id.loc.gov/ontologies/bibframe/Work','http://id.loc.gov/ontologies/bibframe/Hub'],writer,contributor_cache,found_work_uri,found_work_associated_hubs)
 #					instances = root.xpath("/rdf:RDF/bf:Instance[bf:instanceOf/@rdf:resource='" + placeholder_work_id + "']", namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "bf": "http://id.loc.gov/ontologies/bibframe/" })
 #					logging.debug(instances)
 				elif args.source == Sources.wikidata:
 					match_fields = { 'titles': search_titles, 'contributors': contributors }
+					marc_keys = []
+					found_primary = False
 					for contributor in match_fields['contributors']:
+						contributor_labels = contributor.xpath("./bf:agent/bf:Agent/bflc:marcKey/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","bflc": "http://id.loc.gov/ontologies/bflc/"})
+						logging.debug(contributor_labels)
 						contributor_types = contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
 						if 'http://id.loc.gov/ontologies/bibframe/PrimaryContribution' in contributor_types:
-							contributor_labels = contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdfs": "http://www.w3.org/2000/01/rdf-schema#"})
-							logging.debug(contributor_labels)
-							searchForRecordWiki(placeholder_work_id,{ 'titles': match_fields['titles'], 'contributors': contributor_labels },writer)
+							match_fields['contributors'] = contributor_labels
+							found_primary = True
+							break
+						else:
+							marc_keys += contributor_labels
 
-		if args.source == Sources.loc:
-			json.dump(contrubutor_cache,cachefile)
+					if not found_primary:
+						match_fields['contributors'] = marc_keys
+
+					searchForRecordWiki(placeholder_work_id,match_fields,contributor_cache,writer)
+
+		json.dump(contributor_cache,cachefile)
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
