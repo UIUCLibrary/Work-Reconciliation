@@ -1,6 +1,7 @@
-import argparse, sys, os, logging, requests, csv, urllib.parse, copy, json, configparser, time
+import argparse, sys, os, logging, requests, csv, urllib.parse, copy, json, configparser, time, redis
 from lxml import etree
 from enum import Enum
+from redis.commands.json.path import Path
 
 logging.basicConfig(level=logging.DEBUG,format='%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s',datefmt='%H:%M:%S')
 
@@ -145,7 +146,7 @@ def compareTitles(target_title,candidate_titles):
 		logging.debug(normalized_value)
 	return best_fit
 
-def compareContributors(local_contributors,loc_contributors,contributor_cache):
+def compareContributors(local_contributors,loc_contributors,cache_connection):
 	if len(local_contributors) > 0 and len(loc_contributors) > 0:
 		found_contributor_count = 0
 		found_contributor_value = 0
@@ -161,15 +162,20 @@ def compareContributors(local_contributors,loc_contributors,contributor_cache):
 			loc_agent_links = loc_contributor.xpath("./bf:agent/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
 			logging.debug(loc_agent_links)
 			if len(loc_agent_links) > 0:
-				if loc_agent_links[0] in contributor_cache:
-					loc_contributor_values['agent'] = contributor_cache[loc_agent_links[0]]
+#				logging.debug("\t\t\t\t\t\tQUERYING REDIS")
+				res = cache_connection.get(loc_agent_links[0])
+				if res:
+#					logging.debug("\t\tIN CACHE:")
+#					logging.debug(res)
+					loc_contributor_values['agent'] = res
 				else:
 					agent_tree = etree.XML(getRequest(f"{loc_agent_links[0].replace('http','https')}.rdf").content)
 					agent_label = agent_tree.xpath("/rdf:RDF/madsrdf:RWO/rdfs:label/text()",namespaces={"rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#","rdfs": "http://www.w3.org/2000/01/rdf-schema#","madsrdf": "http://www.loc.gov/mads/rdf/v1#"})
-					logging.debug(agent_label)
+#					logging.debug("\t\t\tSETTING CACHE:")
+#					logging.debug(agent_label)
 					if len(agent_label) > 0:
 						loc_contributor_values['agent'] = agent_label[0]
-						contributor_cache[loc_agent_links[0]] = agent_label[0]
+						cache_connection.set(loc_agent_links[0],agent_label[0])
 			else:
 				loc_agent_list = loc_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdfs": "http://www.w3.org/2000/01/rdf-schema#"})
 				if len(loc_agent_list) > 0:
@@ -249,7 +255,7 @@ def findBestMatch(matches):
 	logging.debug(best_score)
 	return (best_url, best_score_breakdown, False if best_url else True)
 
-def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_writer,contributor_cache,work_uri=None,candidate_hubs=None):
+def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_writer,cache_connection,work_uri=None,candidate_hubs=None):
 	for text_string in match_fields['titles']:
 		BASE_LC_URL = 'https://id.loc.gov/search/?q='
 		ENCODED_TEXT_STRING = urllib.parse.quote_plus(text_string)
@@ -310,7 +316,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 #						logging.debug(match_fields['contributors'])
 						record_contributors = details_tree.xpath("/rdf:RDF/bf:Work/bf:contribution/bf:Contribution", namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
 #						logging.debug(record_contributors)
-						matches[found_uri]['contributors'] = compareContributors(match_fields['contributors'],record_contributors,contributor_cache)
+						matches[found_uri]['contributors'] = compareContributors(match_fields['contributors'],record_contributors,cache_connection)
 						logging.debug(matches)
 
 					if len(match_fields['notes']) > 0:
@@ -362,17 +368,17 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 					return selected_url, hubs[selected_url] if len(hubs[selected_url]) > 0 else None
 		except Exception as e:
 			logging.debug(e)
+			output_writer.writerow([placeholder_work_id,text_string,query_url,"QUERY ERROR","QUERY ERROR"])
+			return None, None
 
 		if match_not_found:
 			logging.debug(f"{placeholder_work_id}, {text_string}, {query_url},")
 			output_writer.writerow([placeholder_work_id,text_string,query_url])
 			return None, None
 
-def searchForRecordWiki(placeholder_work_id,match_fields,contributor_cache,output_writer):
+def searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,output_writer):
 	BASE_WIKIDATA_URL = "https://www.wikidata.org/w/api.php"
 	BASE_WIKIDATA_SPARQL_URL = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
-	config = configparser.ConfigParser()
-	config.read('application.config')
 
 	best_work_score = 0
 	best_work = None
@@ -383,8 +389,14 @@ def searchForRecordWiki(placeholder_work_id,match_fields,contributor_cache,outpu
 		logging.debug(split_contributor)
 		marc_contributor = { x[0]: x[1:] for x in split_contributor }
 		logging.debug(marc_contributor)
-		if marc_contributor['a'] not in contributor_cache:
-			contributor_cache[marc_contributor['a']] = {}
+		res = cache_connection.hget(marc_contributor['a'],'empty')
+		logging.debug(res)
+
+		if res == 'True':
+			continue
+		else:
+#		if marc_contributor['a'] not in contributor_cache:
+			contributor_works = {}
 			contributor_found = False
 			if '1' in marc_contributor:
 				if 'https://id.oclc.org/worldcat/entity' in marc_contributor['1']:
@@ -441,18 +453,26 @@ WHERE
 					if len(works_query_results['results']['bindings']) > 0:
 						for w in works_query_results['results']['bindings']:
 							logging.debug(w)
-							contributor_cache[marc_contributor['a']][w['works']['value']] = w['worksLabel']['value']
+							contributor_works[w['works']['value']] = w['worksLabel']['value']
+#							cache_connection.set(f"{marc_contributor['a']}:{w['works']['value']}",w['worksLabel']['value'])
 
-		for found_work in contributor_cache[marc_contributor['a']]:
+			logging.debug(contributor_works)
+			if len(contributor_works) > 0:
+				cache_connection.hset(marc_contributor['a'], mapping=contributor_works)
+			else:
+				cache_connection.hset(marc_contributor['a'], mapping={ 'empty': 'True' })
+
+		logging.debug(marc_contributor['a'])
+		for found_work in cache_connection.hscan_iter(marc_contributor['a']):
 			for t in match_fields['titles']:
-				l_dist = calculateLevenshteinDistance(t,contributor_cache[marc_contributor['a']][found_work])
+				l_dist = calculateLevenshteinDistance(t,found_work[1])
 				if l_dist < len(t) * 0.1:
 					logging.debug(len(t) * 0.1)
 					score_value = (len(t) - l_dist)/(len(t))
 					if score_value > best_work_score:
 						best_work_score = score_value
-						best_work = contributor_cache[marc_contributor['a']][found_work]
-						best_work_uri = found_work
+						best_work = found_work[1]
+						best_work_uri = found_work[0]
 
 
 	if best_work_score > 0 and best_work and best_work_uri:
@@ -469,85 +489,84 @@ def reconcileWorks(args):
 	if not args.input.endswith('.xml'):
 		raise Exception("Input file must be an XML file")
 
-	os.makedirs(args.output,exist_ok=True)
+	config = configparser.ConfigParser()
+	config.read('application.config')
 
-	if not args.cache.endswith('.json'):
-		raise Exception("Cache file needs to be a JSON file")
-
-	if not os.path.isfile(f"{args.output}/{args.cache}"):
-		open(f"{args.output}/{args.cache}", "w+").close()
-	
-	with open(f"{args.output}/{args.cache}",'r+') as cachefile:
+	redis_connected = False
+	while not redis_connected:
 		try:
-			contributor_cache = json.load(cachefile)
-			logging.debug(contributor_cache)
-		except (FileNotFoundError, json.decoder.JSONDecodeError):
-			contributor_cache = {}
+			loc_cache_connection = redis.Redis(host=config.get('redis','host'), port=config.get('redis','port'), db=0, decode_responses=True)
+			wiki_cache_connection = redis.Redis(host=config.get('redis','host'), port=config.get('redis','port'), db=1, decode_responses=True)
+			if loc_cache_connection.ping() and wiki_cache_connection.ping():
+				redis_connected = True
+		except Exception as e:
+			logging.error(f'Error initializing cache {e}')
+			time.sleep(5)
+			logging.info('Retrying cache initialization')
 
-		tree = etree.parse(args.input)
-		root = tree.getroot()
+	os.makedirs(args.output,exist_ok=True)
+	
+	tree = etree.parse(args.input)
+	root = tree.getroot()
 
-		works = root.xpath('/rdf:RDF/bf:Work', namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "bf": "http://id.loc.gov/ontologies/bibframe/" })
-		logging.debug(len(works))
-		logging.debug(works)
+	works = root.xpath('/rdf:RDF/bf:Work', namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "bf": "http://id.loc.gov/ontologies/bibframe/" })
+	logging.debug(len(works))
+	logging.debug(works)
 
-		with open(f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}.tsv",'w') as outfile:
-			writer = csv.writer(outfile,delimiter='\t')
-			for work in works:
-				placeholder_work_id = work.xpath("./@rdf:about", namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#" })[0]
-				logging.debug(placeholder_work_id)
-				work_title = work.xpath("./bf:title/bf:Title//text()", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
-				work_title_text = clearBlankText(work_title)
-				work_types = work.xpath("./rdf:type/@rdf:resource", namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#" })
-				logging.debug(work_types)
+	with open(f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}.tsv",'w') as outfile:
+		writer = csv.writer(outfile,delimiter='\t')
+		for work in works:
+			placeholder_work_id = work.xpath("./@rdf:about", namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#" })[0]
+			logging.debug(placeholder_work_id)
+			work_title = work.xpath("./bf:title/bf:Title//text()", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
+			work_title_text = clearBlankText(work_title)
+			work_types = work.xpath("./rdf:type/@rdf:resource", namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#" })
+			logging.debug(work_types)
 
-				variant_titles = work.xpath("./bf:title/bf:VariantTitle//text()", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
-				variant_titles_text = clearBlankText(variant_titles)
+			variant_titles = work.xpath("./bf:title/bf:VariantTitle//text()", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
+			variant_titles_text = clearBlankText(variant_titles)
 
-				contributors = work.xpath("./bf:contribution/bf:Contribution", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
+			contributors = work.xpath("./bf:contribution/bf:Contribution", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
 
-				search_titles = [work_title_text]
-				if variant_titles_text:
-					search_titles.append(variant_titles_text)
+			search_titles = [work_title_text]
+			if variant_titles_text:
+				search_titles.append(variant_titles_text)
 
-				if args.source == Sources.loc:
-					notes = work.xpath("./bf:note/bf:Note", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
+			if args.source == Sources.loc:
+				notes = work.xpath("./bf:note/bf:Note", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
 
-					languages = work.xpath("./bf:language/@rdf:resource", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/", "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#" })
+				languages = work.xpath("./bf:language/@rdf:resource", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/", "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#" })
 
-					match_fields = { 'titles': search_titles, 'notes': notes, 'languages': languages, 'contributors': contributors }
-					
-					found_work_uri, found_work_associated_hubs = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/works',work_types,writer,contributor_cache)
-					searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/hubs',['http://id.loc.gov/ontologies/bibframe/Work','http://id.loc.gov/ontologies/bibframe/Hub'],writer,contributor_cache,found_work_uri,found_work_associated_hubs)
+				match_fields = { 'titles': search_titles, 'notes': notes, 'languages': languages, 'contributors': contributors }
+				
+				found_work_uri, found_work_associated_hubs = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/works',work_types,writer,loc_cache_connection)
+				searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/hubs',['http://id.loc.gov/ontologies/bibframe/Work','http://id.loc.gov/ontologies/bibframe/Hub'],writer,loc_cache_connection,found_work_uri,found_work_associated_hubs)
 #					instances = root.xpath("/rdf:RDF/bf:Instance[bf:instanceOf/@rdf:resource='" + placeholder_work_id + "']", namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "bf": "http://id.loc.gov/ontologies/bibframe/" })
 #					logging.debug(instances)
-				elif args.source == Sources.wikidata:
-					match_fields = { 'titles': search_titles, 'contributors': contributors }
-					marc_keys = []
-					found_primary = False
-					for contributor in match_fields['contributors']:
-						contributor_labels = contributor.xpath("./bf:agent/bf:Agent/bflc:marcKey/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","bflc": "http://id.loc.gov/ontologies/bflc/"})
-						logging.debug(contributor_labels)
-						contributor_types = contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
-						if 'http://id.loc.gov/ontologies/bibframe/PrimaryContribution' in contributor_types:
-							match_fields['contributors'] = contributor_labels
-							found_primary = True
-							break
-						else:
-							marc_keys += contributor_labels
+			elif args.source == Sources.wikidata:
+				match_fields = { 'titles': search_titles, 'contributors': contributors }
+				marc_keys = []
+				found_primary = False
+				for contributor in match_fields['contributors']:
+					contributor_labels = contributor.xpath("./bf:agent/bf:Agent/bflc:marcKey/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","bflc": "http://id.loc.gov/ontologies/bflc/"})
+					logging.debug(contributor_labels)
+					contributor_types = contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+					if 'http://id.loc.gov/ontologies/bibframe/PrimaryContribution' in contributor_types:
+						match_fields['contributors'] = contributor_labels
+						found_primary = True
+						break
+					else:
+						marc_keys += contributor_labels
 
-					if not found_primary:
-						match_fields['contributors'] = marc_keys
+				if not found_primary:
+					match_fields['contributors'] = marc_keys
 
-					searchForRecordWiki(placeholder_work_id,match_fields,contributor_cache,writer)
-
-		json.dump(contributor_cache,cachefile)
+				searchForRecordWiki(placeholder_work_id,match_fields,wiki_cache_connection,writer)
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument("input", help="BIBFRAME XML file to process")
 	parser.add_argument("output", help="Directory to write the output to")
-	parser.add_argument("cache", help="Cache to use for contributors")
 	parser.add_argument("source", type=Sources, choices=list(Sources), help="Run queries on LOC or Wikidata")
 	args = parser.parse_args()
 
