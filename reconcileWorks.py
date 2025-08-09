@@ -2,6 +2,9 @@ import argparse, sys, os, logging, requests, csv, urllib.parse, copy, json, conf
 from lxml import etree
 from enum import Enum
 from redis.commands.json.path import Path
+from limits import RateLimitItemPerMinute
+from limits.storage import MemoryStorage
+from limits.strategies import FixedWindowRateLimiter
 
 logging.basicConfig(level=logging.DEBUG,format='%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s',datefmt='%H:%M:%S')
 
@@ -19,6 +22,10 @@ if os.name == 'nt':
 	SLASH = '\\'
 else:
 	SLASH = '/'
+
+storage = MemoryStorage()
+limiter = FixedWindowRateLimiter(storage)
+loc_limit = RateLimitItemPerMinute(200)
 
 def calculateLevenshteinDistance(string1,string2):
 	matrix = []
@@ -56,9 +63,14 @@ def normalizeVariant(variant):
 		return variant.encode('utf-8').strip()
 
 def getRequest(url):
+	if 'id.loc.gov' in url:
+		while not limiter.hit(loc_limit, "loc"):
+			logging.debug("Hit limit")
+			time.sleep(0.5)
 	try:
-		result = requests.get(url,timeout=60)
+		result = requests.get(url, headers={ 'User-Agent': 'reconcileWorks / 0.1 University Library, University of Illinois' }, timeout=60)
 		if result.status_code == 429:
+			logging.debug(result.headers.get("Retry-After"))
 			time.sleep(60)
 			result = requests.get(url,timeout=60)
 	except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ValueError) as e:
