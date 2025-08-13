@@ -18,6 +18,16 @@ class Sources(Enum):
 	def __str__(self):
 		return self.value
 
+class Namespaces(str, Enum):
+	BF = "http://id.loc.gov/ontologies/bibframe/"
+	RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+	BFLC = "http://id.loc.gov/ontologies/bflc/"
+	RDFS = "http://www.w3.org/2000/01/rdf-schema#"
+	MADSRDF = "http://www.loc.gov/mads/rdf/v1#"
+
+	def __str__(self):
+		return self.value
+
 if os.name == 'nt':
 	SLASH = '\\'
 else:
@@ -167,11 +177,11 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 		loc_values = []
 		for loc_contributor in loc_contributors:
 			loc_contributor_values = {}
-			loc_type = loc_contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+			loc_type = loc_contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 			if len(loc_type) > 0:
 				loc_contributor_values['type'] = loc_type[0]
 
-			loc_agent_links = loc_contributor.xpath("./bf:agent/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+			loc_agent_links = loc_contributor.xpath("./bf:agent/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 			logging.debug(loc_agent_links)
 			if len(loc_agent_links) > 0:
 #				logging.debug("\t\t\t\t\t\tQUERYING REDIS")
@@ -182,14 +192,14 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 					loc_contributor_values['agent'] = res
 				else:
 					agent_tree = etree.XML(getRequest(f"{loc_agent_links[0].replace('http','https')}.rdf").content)
-					agent_label = agent_tree.xpath("/rdf:RDF/madsrdf:RWO/rdfs:label/text()",namespaces={"rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#","rdfs": "http://www.w3.org/2000/01/rdf-schema#","madsrdf": "http://www.loc.gov/mads/rdf/v1#"})
+					agent_label = agent_tree.xpath("/rdf:RDF/madsrdf:RWO/rdfs:label/text()",namespaces={"rdf": Namespaces.RDF,"rdfs": Namespaces.RDFS,"madsrdf": Namespaces.MADSRDF})
 #					logging.debug("\t\t\tSETTING CACHE:")
 #					logging.debug(agent_label)
 					if len(agent_label) > 0:
 						loc_contributor_values['agent'] = agent_label[0]
 						cache_connection.set(loc_agent_links[0],agent_label[0])
 			else:
-				loc_agent_list = loc_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdfs": "http://www.w3.org/2000/01/rdf-schema#"})
+				loc_agent_list = loc_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": Namespaces.BF,"rdfs": Namespaces.RDFS})
 				if len(loc_agent_list) > 0:
 					loc_contributor_values['agent'] = loc_agent_list[0]
 
@@ -205,13 +215,13 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 				score_count = 0
 				score_value = 0
 
-				local_type = local_contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+				local_type = local_contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 				if len(local_type) > 0:
 					if 'type' in val and local_type[0] == val['type']:
 						score_count += 1
 						score_value += 1
 
-				local_agent = local_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdfs": "http://www.w3.org/2000/01/rdf-schema#"})
+				local_agent = local_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": Namespaces.BF,"rdfs": Namespaces.RDFS})
 				if len(local_agent) > 0:
 					logging.debug(local_agent[0])
 					score_count += 1
@@ -303,8 +313,8 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 					found_uri = 'http://id.loc.gov' + result_table[i].xpath("./td/a/@href")[0]
 					logging.debug(found_uri)
 					details_tree = etree.XML(getRequest(f"{found_uri.replace('http','https')}.bibframe.rdf").content)
-					details_title = details_tree.xpath("/rdf:RDF/bf:Work/bf:title/bf:Title/bf:mainTitle/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
-					details_variant_title = details_tree.xpath("/rdf:RDF/bf:Work/bf:title/bf:VariantTitle/bf:mainTitle/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+					details_title = details_tree.xpath("/rdf:RDF/bf:Work/bf:title/bf:Title/bf:mainTitle/text()",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
+					details_variant_title = details_tree.xpath("/rdf:RDF/bf:Work/bf:title/bf:VariantTitle/bf:mainTitle/text()",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 
 					if len(authorized_heading) > 0 or len(variant_headings) > 0 or len(details_title) > 0 or len(details_variant_title):
 						logging.debug("TITLES>>>>>>")
@@ -314,7 +324,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 					logging.debug("\t\t\t\t????????????????????????????????????????????????????????")
 					logging.debug(match_fields)
 					if len(match_fields['languages']) > 0:
-						record_languages = details_tree.xpath("/rdf:RDF/bf:Work/bf:language/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+						record_languages = details_tree.xpath("/rdf:RDF/bf:Work/bf:language/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 						logging.debug('LANGUAGELANGUAGELANGUAGELANGUAGELANGUAGELANGUAGELANGUAGELANGUAGELANGUAGELANGUAGE')
 						language_match_count = 0
 						for lang in match_fields['languages']:
@@ -326,14 +336,14 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 					if len(match_fields['contributors']) > 0:
 						logging.debug("\t\tCONTRIBUTORSCONTRIBUTORSCONTRIBUTORSCONTRIBUTORSCONTRIBUTORSCONTRIBUTORSCONTRIBUTORSCONTRIBUTORS")
 #						logging.debug(match_fields['contributors'])
-						record_contributors = details_tree.xpath("/rdf:RDF/bf:Work/bf:contribution/bf:Contribution", namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+						record_contributors = details_tree.xpath("/rdf:RDF/bf:Work/bf:contribution/bf:Contribution", namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 #						logging.debug(record_contributors)
 						matches[found_uri]['contributors'] = compareContributors(match_fields['contributors'],record_contributors,cache_connection)
 						logging.debug(matches)
 
 					if len(match_fields['notes']) > 0:
 	#					logging.debug(details_tree)
-						record_notes = details_tree.xpath("/rdf:RDF/bf:Work/bf:note/bf:Note",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+						record_notes = details_tree.xpath("/rdf:RDF/bf:Work/bf:note/bf:Note",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 	#					logging.debug("NOTESNOTESNOTESNOTESNOTESNOTESNOTESNOTESNOTESNOTESNOTESNOTESNOTESNOTES")
 	#					logging.debug(notes)
 						notes_a = getNotes(match_fields['notes'])
@@ -353,13 +363,13 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 						if candidate_hubs and found_uri in candidate_hubs:
 							matches[found_uri]['hub'] = 1
 						else:
-							record_works = details_tree.xpath("/rdf:RDF/bf:Work/bf:hasExpression/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+							record_works = details_tree.xpath("/rdf:RDF/bf:Work/bf:hasExpression/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 							logging.debug("hasEXPRESSION--hasEXPRESSION--hasEXPRESSION--hasEXPRESSION--hasEXPRESSION--hasEXPRESSION--hasEXPRESSION--hasEXPRESSION--")
 							logging.debug(record_works)
 							if work_uri in record_works:
 								matches[found_uri]['hub'] = 1
 					else:
-						record_hubs = details_tree.xpath("/rdf:RDF/bf:Work/bf:expressionOf/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+						record_hubs = details_tree.xpath("/rdf:RDF/bf:Work/bf:expressionOf/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 						hubs[found_uri] = record_hubs
 #					logging.debug(f"{placeholder_work_id}, {text_string}, {query_url}, {found_uri}")
 #					output_writer.writerow([placeholder_work_id,text_string,query_url,found_uri])
@@ -490,9 +500,11 @@ WHERE
 	if best_work_score > 0 and best_work and best_work_uri:
 		logging.debug(f"{placeholder_work_id}, {json.dumps(match_fields)}, {best_work}, {best_work_score}, {best_work_uri}")
 		output_writer.writerow([placeholder_work_id,json.dumps(match_fields),best_work,best_work_score,best_work_uri])
+		return best_work_uri
 	else:
 		logging.debug(f"{placeholder_work_id}, {json.dumps(match_fields)}")
 		output_writer.writerow([placeholder_work_id,json.dumps(match_fields)])
+		return None
 
 def clearBlankText(text_array):
 	return " ".join([x for x in text_array if x.strip() != ''])
@@ -520,49 +532,49 @@ def reconcileWorks(args):
 	
 	tree = etree.parse(args.input)
 	root = tree.getroot()
-
-	works = root.xpath('/rdf:RDF/bf:Work', namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "bf": "http://id.loc.gov/ontologies/bibframe/" })
+	logging.debug(Namespaces.RDF)
+	logging.debug(type(Namespaces.RDF))
+	works = root.xpath('/rdf:RDF/bf:Work', namespaces={ "rdf": Namespaces.RDF, "bf": Namespaces.BF })
 	logging.debug(len(works))
 	logging.debug(works)
 
 	with open(f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}.tsv",'w') as outfile:
 		writer = csv.writer(outfile,delimiter='\t')
 		for work in works:
-			placeholder_work_id = work.xpath("./@rdf:about", namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#" })[0]
+			placeholder_work_id = work.xpath("./@rdf:about", namespaces={ "rdf": Namespaces.RDF })[0]
 			logging.debug(placeholder_work_id)
-			work_title = work.xpath("./bf:title/bf:Title//text()", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
+			work_title = work.xpath("./bf:title/bf:Title//text()", namespaces={ "bf": Namespaces.BF })
 			work_title_text = clearBlankText(work_title)
-			work_types = work.xpath("./rdf:type/@rdf:resource", namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#" })
+			work_types = work.xpath("./rdf:type/@rdf:resource", namespaces={ "rdf": Namespaces.RDF })
 			logging.debug(work_types)
 
-			variant_titles = work.xpath("./bf:title/bf:VariantTitle//text()", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
+			variant_titles = work.xpath("./bf:title/bf:VariantTitle//text()", namespaces={ "bf":Namespaces.BF })
 			variant_titles_text = clearBlankText(variant_titles)
 
-			contributors = work.xpath("./bf:contribution/bf:Contribution", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
+			contributors = work.xpath("./bf:contribution/bf:Contribution", namespaces={ "bf": Namespaces.BF })
 
 			search_titles = [work_title_text]
 			if variant_titles_text:
 				search_titles.append(variant_titles_text)
 
 			if args.source == Sources.loc:
-				notes = work.xpath("./bf:note/bf:Note", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/" })
+				notes = work.xpath("./bf:note/bf:Note", namespaces={ "bf": Namespaces.BF })
 
-				languages = work.xpath("./bf:language/@rdf:resource", namespaces={ "bf": "http://id.loc.gov/ontologies/bibframe/", "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#" })
+				languages = work.xpath("./bf:language/@rdf:resource", namespaces={ "bf": Namespaces.BF, "rdf": Namespaces.RDF })
 
 				match_fields = { 'titles': search_titles, 'notes': notes, 'languages': languages, 'contributors': contributors }
 				
 				found_work_uri, found_work_associated_hubs = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/works',work_types,writer,loc_cache_connection)
-				searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/hubs',['http://id.loc.gov/ontologies/bibframe/Work','http://id.loc.gov/ontologies/bibframe/Hub'],writer,loc_cache_connection,found_work_uri,found_work_associated_hubs)
-#					instances = root.xpath("/rdf:RDF/bf:Instance[bf:instanceOf/@rdf:resource='" + placeholder_work_id + "']", namespaces={ "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "bf": "http://id.loc.gov/ontologies/bibframe/" })
-#					logging.debug(instances)
+				found_hub_uri, trash = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/hubs',['http://id.loc.gov/ontologies/bibframe/Work','http://id.loc.gov/ontologies/bibframe/Hub'],writer,loc_cache_connection,found_work_uri,found_work_associated_hubs)
+
 			elif args.source == Sources.wikidata:
 				match_fields = { 'titles': search_titles, 'contributors': contributors }
 				marc_keys = []
 				found_primary = False
 				for contributor in match_fields['contributors']:
-					contributor_labels = contributor.xpath("./bf:agent/bf:Agent/bflc:marcKey/text()",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","bflc": "http://id.loc.gov/ontologies/bflc/"})
+					contributor_labels = contributor.xpath("./bf:agent/bf:Agent/bflc:marcKey/text()",namespaces={"bf": Namespaces.BF,"bflc": Namespaces.BFLC})
 					logging.debug(contributor_labels)
-					contributor_types = contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": "http://id.loc.gov/ontologies/bibframe/","rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"})
+					contributor_types = contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 					if 'http://id.loc.gov/ontologies/bibframe/PrimaryContribution' in contributor_types:
 						match_fields['contributors'] = contributor_labels
 						found_primary = True
@@ -573,7 +585,28 @@ def reconcileWorks(args):
 				if not found_primary:
 					match_fields['contributors'] = marc_keys
 
-				searchForRecordWiki(placeholder_work_id,match_fields,wiki_cache_connection,writer)
+				found_work_uri = searchForRecordWiki(placeholder_work_id,match_fields,wiki_cache_connection,writer)
+
+			if found_work_uri:
+				work.set('{http://www.w3.org/1999/02/22-rdf-syntax-ns#}about',found_work_uri)
+				logging.debug(f"/rdf:RDF/bf:Instance[bf:instanceOf/@rdf:resource={placeholder_work_id}]")
+				instances = root.xpath(f"/rdf:RDF/bf:Instance[bf:instanceOf/@rdf:resource=\"{placeholder_work_id}\"]", namespaces={ "rdf": Namespaces.RDF, "bf": Namespaces.BF })
+				for instance in instances:
+					instance.xpath(f"./bf:instanceOf[@rdf:resource=\"{placeholder_work_id}\"]",namespaces={ "rdf": Namespaces.RDF, "bf": Namespaces.BF })[0].set(f"{{{Namespaces.RDF}}}resource",found_work_uri)
+
+			if found_hub_uri:
+				expression_of = etree.SubElement(work,f"{{{Namespaces.BF}}}expressionOf")
+				expression_of.set(f"{{{Namespaces.RDF}}}resource",found_hub_uri)
+
+				new_hub = etree.SubElement(root,f"{{{Namespaces.BF}}}Work")
+				new_hub.set(f"{{{Namespaces.RDF}}}about",found_hub_uri)
+				hub_type = etree.SubElement(new_hub,f"{{{Namespaces.RDF}}}type")
+				hub_type.set(f"{{{Namespaces.RDF}}}resource","http://id.loc.gov/ontologies/bibframe/Hub")
+				has_expression = etree.SubElement(new_hub,f"{{{Namespaces.BF}}}hasExpression")
+				has_expression.set(f"{{{Namespaces.RDF}}}resource", found_work_uri if found_work_uri else placeholder_work_id)
+
+	with open(f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}.xml",'wb') as out_xml_file:
+		out_xml_file.write(etree.tostring(tree))
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
