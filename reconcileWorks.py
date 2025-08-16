@@ -6,7 +6,7 @@ from limits import RateLimitItemPerMinute
 from limits.storage import MemoryStorage
 from limits.strategies import FixedWindowRateLimiter
 
-logging.basicConfig(level=logging.DEBUG,format='%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s',datefmt='%H:%M:%S')
+logging.basicConfig(level=logging.WARNING,format='%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s',datefmt='%H:%M:%S')
 
 class BrokenResponse:
 	status_code = '400'
@@ -513,6 +513,9 @@ def reconcileWorks(args):
 	if not args.input.endswith('.xml'):
 		raise Exception("Input file must be an XML file")
 
+	if args.verbose:
+		logging.getLogger().setLevel(logging.DEBUG)
+
 	config = configparser.ConfigParser()
 	config.read('application.config')
 
@@ -530,10 +533,9 @@ def reconcileWorks(args):
 
 	os.makedirs(args.output,exist_ok=True)
 	
-	tree = etree.parse(args.input)
+	parser = etree.XMLParser(remove_blank_text=True)
+	tree = etree.parse(args.input, parser)
 	root = tree.getroot()
-	logging.debug(Namespaces.RDF)
-	logging.debug(type(Namespaces.RDF))
 	works = root.xpath('/rdf:RDF/bf:Work', namespaces={ "rdf": Namespaces.RDF, "bf": Namespaces.BF })
 	logging.debug(len(works))
 	logging.debug(works)
@@ -606,13 +608,14 @@ def reconcileWorks(args):
 				has_expression.set(f"{{{Namespaces.RDF}}}resource", found_work_uri if found_work_uri else placeholder_work_id)
 
 	with open(f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}.xml",'wb') as out_xml_file:
-		out_xml_file.write(etree.tostring(tree))
+		out_xml_file.write(etree.tostring(tree,pretty_print=True))
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument("input", help="BIBFRAME XML file to process")
 	parser.add_argument("output", help="Directory to write the output to")
 	parser.add_argument("source", type=Sources, choices=list(Sources), help="Run queries on LOC or Wikidata")
+	parser.add_argument("-v", "--verbose", action="store_true")
 	args = parser.parse_args()
 
 	reconcileWorks(args)
