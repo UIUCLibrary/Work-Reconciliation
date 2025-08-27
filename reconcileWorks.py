@@ -166,7 +166,7 @@ def compareTitles(target_title,candidate_titles):
 		if normalized_value > best_fit:
 			best_fit = normalized_value
 		logging.debug(normalized_value)
-	return best_fit
+	return (best_fit * 0.5)
 
 def compareContributors(local_contributors,loc_contributors,cache_connection):
 	if len(local_contributors) > 0 and len(loc_contributors) > 0:
@@ -253,7 +253,12 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 		logging.debug(found_contributor_count)
 		logging.debug("found contributor value")
 		logging.debug(found_contributor_value)
-		return (found_contributor_value / found_contributor_count) if found_contributor_count > 0 else 0
+		if found_contributor_count > 1:
+			return (2 * (found_contributor_value / found_contributor_count))
+		elif found_contributor_count > 0:
+			return (found_contributor_value / found_contributor_count)
+		else:
+			return 0
 	else:
 		return 0
 
@@ -390,7 +395,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 					return selected_url, hubs[selected_url] if len(hubs[selected_url]) > 0 else None
 		except Exception as e:
 			logging.debug(e)
-			output_writer.writerow([placeholder_work_id,text_string,query_url,"QUERY ERROR","QUERY ERROR"])
+			output_writer.writerow([placeholder_work_id,text_string,query_url,"QUERY ERROR",e])
 			return None, None
 
 		if match_not_found:
@@ -509,7 +514,7 @@ WHERE
 def clearBlankText(text_array):
 	return " ".join([x for x in text_array if x.strip() != ''])
 
-def reconcileWorks(args):
+def init(args):
 	if not args.input.endswith('.xml'):
 		raise Exception("Input file must be an XML file")
 
@@ -532,6 +537,11 @@ def reconcileWorks(args):
 			logging.info('Retrying cache initialization')
 
 	os.makedirs(args.output,exist_ok=True)
+
+	return loc_cache_connection, wiki_cache_connection
+
+def reconcileWorks(args):
+	loc_cache_connection, wiki_cache_connection = init(args)
 	
 	parser = etree.XMLParser(remove_blank_text=True)
 	tree = etree.parse(args.input, parser)
