@@ -90,6 +90,7 @@ def getRequest(url):
 
 	return result
 
+# Utility for structuring notes as needed for processing
 def getNotes(notes):
 	note_list = []
 	for n in notes:
@@ -106,17 +107,27 @@ def getNotes(notes):
 
 	return note_list
 
+# Search for each local note in LOC record. Note matches are made by calcualting the 
+# Levenshtein Distance, but only selecting cases where the Levenshtein Distance is 
+# less than 10% of the length of the note. This filter exists because most notes are
+# pretty long and unique and should be pretty similar to look like a match.
+#
+# Among that group the closest match is found and given a score between 0 and 1. Once
+# all notes have been searched for, the final score is based on the sum of all matches
+# divided by the number of notes found. This is more generous than dividing by the 
+# number of notes in the local record because a match is seen as pretty significant
+# since they can be so unique.
 def compareNotes(local_notes,loc_notes):
-	logging.debug(local_notes)
-	logging.debug(loc_notes)
+	logging.debug(f"\t\tCalculating score based on note similarities")
+	logging.debug(f"\t\tLocal notes: {local_notes}")
+	logging.debug(f"\t\tLOC notes: {loc_notes}")
 	if len(local_notes) > 0:
 		found_note_count = 0
 		found_note_value = 0
 		for note in local_notes:
 			for loc_note in loc_notes:
-				logging.debug("CHECK VVVVVVVV")
-				logging.debug(note)
-				logging.debug(loc_note)
+				logging.debug(f"\t\tLocal note: {note}")
+				logging.debug(f"\t\tLOC note: {loc_note}")
 				score_card = 0
 				score_value = 0
 				for element in note:
@@ -125,7 +136,7 @@ def compareNotes(local_notes,loc_notes):
 							l_dist = calculateLevenshteinDistance(note[element],loc_note[element])
 
 							if l_dist < len(note[element]) * 0.1:
-								logging.debug(len(note[element]) * 0.1)
+								logging.debug(f"\t\tMax allowed distance: {len(note[element]) * 0.1}")
 								score_card += 1
 								score_value += (len(note[element]) - l_dist)/(len(note[element]))
 						else:
@@ -142,18 +153,21 @@ def compareNotes(local_notes,loc_notes):
 	else:
 		return 0
 
+# Find the best fit of all possible title matches based on Levenshtein Distance. Use the
+# distance to generate a value between 0 and 1. Highest score is reutrned, but divided 
+# in half to lessen the weight of title matches.
 def compareTitles(target_title,candidate_titles):
 	best_fit = 0
+	logging.debug(f"\t\tCalculating score based on title similarities")
 	for candidate in candidate_titles:
-		logging.debug(f"\t\t\t{target_title}")
-		logging.debug(f"\t\t\t{candidate}")
+		logging.debug(f"\t\t{target_title}")
+		logging.debug(f"\t\t{candidate}")
 		l_dist = calculateLevenshteinDistance(target_title,candidate)
-		logging.debug("::::::::::::::::::::::::::::::::::::::::::::::::::::::::::")
-		logging.debug(l_dist)
+		logging.debug(f"\t\tDistance: {l_dist}")
 		normalized_value = (len(target_title) - l_dist)/len(target_title)
 		if normalized_value > best_fit:
 			best_fit = normalized_value
-		logging.debug(normalized_value)
+		logging.debug(f"\t\tAdjusted score: {normalized_value}")
 	return (best_fit * 0.5)
 
 # Grab contributor names from LOC record, either taking the plain text, or following links and
@@ -178,7 +192,7 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 		found_contributor_count = 0
 		found_contributor_value = 0
 
-		logging.debug("\t\tCalculating score based on contirbutor similarities")
+		logging.debug("\t\tCalculating score based on contributor similarities")
 		loc_values = []
 		for loc_contributor in loc_contributors:
 			loc_contributor_values = {}
