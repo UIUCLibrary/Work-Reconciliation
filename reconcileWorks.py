@@ -58,9 +58,6 @@ def calculateLevenshteinDistance(string1,string2):
 			else:
 				matrix[i][j] = min(matrix[i-1][j]+1, matrix[i][j-1]+1,matrix[i-1][j-1]+1)
 
-	#for i in range(1,len(string1)+1):
-	#	print matrix[i]
-
 	return matrix[len(string1)][len(string2)]
 
 # Stripping whitespace varies based on character encoding, and LOC results aren't always consistent
@@ -159,12 +156,29 @@ def compareTitles(target_title,candidate_titles):
 		logging.debug(normalized_value)
 	return (best_fit * 0.5)
 
+# Grab contributor names from LOC record, either taking the plain text, or following links and
+# taking the labels from those. The fact that most contributors are represented as links could
+# greatly expand runtime, so the results are stored in a Redis cache to prevent duplicate calls.
+#
+# Once the LOC candidates are collected, search for each contributor from the local record in 
+# that list. Matches are found by checking if the contributor types match, and calculating the 
+# Levenshtein Distance between the two strings. If the types match, that is given a score of 1.
+# The Levenshtein Distance is used to create a score between 0 and 1 where 1 is an exact match.
+# When the best score is found it will be normalized to the 0-1 range based on how big the final
+# score can be.
+#
+# When a match is found, the best score is added to a running tally and the number of matches 
+# found is incremented. The final output is based on this total. No matches will return 0. One 
+# match will return the score divided by the total number of contributors listed in the local
+# record, which will result in some value 0-1. If more than one contributor is found, the score
+# is two times the score over the number of potential contributors, which will result in some
+# value 0-2.
 def compareContributors(local_contributors,loc_contributors,cache_connection):
 	if len(local_contributors) > 0 and len(loc_contributors) > 0:
 		found_contributor_count = 0
 		found_contributor_value = 0
 
-		logging.debug("\t\tCHECK\t\t****************************")
+		logging.debug("\t\tCalculating score based on contirbutor similarities")
 		loc_values = []
 		for loc_contributor in loc_contributors:
 			loc_contributor_values = {}
@@ -173,7 +187,7 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 				loc_contributor_values['type'] = loc_type[0]
 
 			loc_agent_links = loc_contributor.xpath("./bf:agent/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
-			logging.debug(loc_agent_links)
+			logging.debug(f"\t\tLOC contributor links: {loc_agent_links}")
 			if len(loc_agent_links) > 0:
 				res = cache_connection.get(loc_agent_links[0])
 				if res:
@@ -191,7 +205,7 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 							loc_contributor_values['agent'] = agent_label[0]
 							cache_connection.set(loc_agent_links[0],agent_label[0])
 					else:
-						logging.debug(f"Agent link is not from loc: {loc_agent_links[0]}")
+						logging.debug(f"\t\tAgent link is not from loc: {loc_agent_links[0]}")
 			else:
 				loc_agent_list = loc_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": Namespaces.BF,"rdfs": Namespaces.RDFS})
 				if len(loc_agent_list) > 0:
@@ -199,29 +213,30 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 
 			if len(loc_contributor_values) > 0:
 				loc_values.append(loc_contributor_values)
-		logging.debug(loc_values)
+		logging.debug(f"\t\tLOC contributor names: {loc_values}")
 
 		for local_contributor in local_contributors:
 			best_score_count = 0
 			best_score_value = 0
+
+			local_type = local_contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
+			local_agent = local_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": Namespaces.BF,"rdfs": Namespaces.RDFS})
+			logging.debug(f"\t\tLooking for a match on local contributor {local_agent[0]}")
 			for val in loc_values:
-				logging.debug(val)
+				logging.debug(f"\t\tChecking LOC contributor {val}")
 				score_count = 0
 				score_value = 0
 
-				local_type = local_contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 				if len(local_type) > 0:
 					if 'type' in val and local_type[0] == val['type']:
 						score_count += 1
 						score_value += 1
 
-				local_agent = local_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": Namespaces.BF,"rdfs": Namespaces.RDFS})
 				if len(local_agent) > 0:
-					logging.debug(local_agent[0])
 					score_count += 1
 
 					if 'agent' in val:
-						logging.debug(val['agent'])
+						logging.debug(f"\t\tLOC contriubytor name: {val['agent']}")
 
 						l_dist = calculateLevenshteinDistance(local_agent[0],val['agent'])
 
@@ -231,10 +246,8 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 					best_score_count = score_count
 					best_score_value = score_value
 
-					logging.debug("updated score count")
-					logging.debug(best_score_count)
-					logging.debug("updated score value")
-					logging.debug(best_score_value)
+					logging.debug(f"\t\tupdated score count: {best_score_count}")
+					logging.debug(f"\t\tupdated score value: {best_score_value}")
 
 					if len(local_agent) > 0 and 'agent' in val and l_dist == 0:
 						break
@@ -243,10 +256,8 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 				found_contributor_count += 1
 				found_contributor_value += (best_score_value / best_score_count)
 
-		logging.debug("found contributor count")
-		logging.debug(found_contributor_count)
-		logging.debug("found contributor value")
-		logging.debug(found_contributor_value)
+		logging.debug(f"\t\tfound contributor count: {found_contributor_count}")
+		logging.debug(f"\t\tfound contributor value: {found_contributor_value}")
 		if found_contributor_count > 1:
 			return (2 * (found_contributor_value / found_contributor_count))
 		elif found_contributor_count > 0:
@@ -256,17 +267,24 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 	else:
 		return 0
 
+# Feed in dict that contains results for each title variation, which includes 'matches' with
+# scores for each element present in the local record that we are searching for. These scores
+# generally range from 0-1, except for title which only goes up to 0.5 to lower the weight of
+# those matches, and contributor which can go up to 2 if there are multiple contributor matches.
+# The URI with the best score is returned along with the associated name and scores. The scores
+# must add up to be greater than half of number of scored parameters to count as a match. If 
+# no result meets that threshold, we return null values to indicate that no match has been found.
+# The threshold can be adjusted in the future to calibrate how strict the matches should be.
 def findBestMatch(scores_by_title):
 	best_score = 0
 	best_score_breakdown = {}
 	best_url = None
 	best_name = None
 	for title in scores_by_title:
-		logging.debug(scores_by_title)
-		logging.debug(title)
+		logging.debug(f"\t\tSearching for best match on results from {title}")
 		for match in scores_by_title[title]['matches']:
 			url = match
-			logging.debug(scores_by_title[title])
+			logging.debug(f"\t\tProcessing: {scores_by_title[title]}")
 			score = sum(scores_by_title[title]['matches'][match].values())
 			if score > best_score and score > (len(scores_by_title[title]['matches'][match])/2.0):
 				best_score = score
@@ -274,13 +292,12 @@ def findBestMatch(scores_by_title):
 				best_score_breakdown = copy.deepcopy(scores_by_title[title]['matches'][match])
 				best_name = title
 
-			logging.debug(match)
-			logging.debug(scores_by_title[title]['matches'][match].values())
-			logging.debug(score)
+			logging.debug(f"\t\tScoring {match}")
+			logging.debug(f"\t\tIndividual scores: {scores_by_title[title]['matches'][match].values()}")
+			logging.debug(f"\t\tFinal score: {score}")
 
-	logging.debug(best_url)
-	logging.debug(best_score)
-	logging.debug(best_name)
+	logging.debug(f"\t\tBest score from search results: {best_score}")
+	logging.debug(f"\t\tBest name from search results: {best_name}")
 	return (best_url, best_name, best_score_breakdown, False if best_url else True)
 
 # Search LOC based on title text, types and specify if searching for a Work or Hub.
