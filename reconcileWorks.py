@@ -434,6 +434,8 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 		output_writer.writerow([placeholder_work_id,match_fields['titles'][0],query_url])
 		return None, None
 
+# Search for a record in Wikidata by finding a listed contributor and searching through
+# their listed works to find the best title match.
 def searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,output_writer):
 	BASE_WIKIDATA_URL = "https://www.wikidata.org/w/api.php"
 	BASE_WIKIDATA_SPARQL_URL = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
@@ -444,11 +446,10 @@ def searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,output
 	for contributor in match_fields['contributors']:
 		split_contributor = contributor.split('$')
 		split_contributor.pop(0)
-		logging.debug(split_contributor)
+		logging.debug(f"\tContributor: {split_contributor}")
 		marc_contributor = { x[0]: x[1:] for x in split_contributor }
-		logging.debug(marc_contributor)
+		logging.debug(f"\tReformatted contributor: {marc_contributor}")
 		res = cache_connection.hget(marc_contributor['a'],'empty')
-		logging.debug(res)
 
 		if res == 'True':
 			continue
@@ -465,7 +466,7 @@ WHERE
 }}"""
 					sparql_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(SPARQL_QUERY)}"
 					query_results = json.loads(getRequest(sparql_query_url).content)
-					logging.debug(query_results)
+					logging.debug(f"\tContributor record from OCLC URI: {query_results}")
 					if len(query_results['results']['bindings']) > 0:
 						contributor_code = query_results['results']['bindings'][0]['contrib']['value']
 						contributor_code = contributor_code[contributor_code.rfind('/')+1:]
@@ -475,12 +476,12 @@ WHERE
 				ENCODED_CONTRIBUTOR = urllib.parse.quote_plus(marc_contributor['a'])
 				wikidata_query = f"{BASE_WIKIDATA_URL}?action=query&list=search&srsearch={ENCODED_CONTRIBUTOR}&format=json"
 				wikidata_search = json.loads(getRequest(wikidata_query).content)
-				logging.debug(wikidata_search)
+				logging.debug(f"\tSerach results for contributor: {wikidata_search}")
 				if len(wikidata_search['query']['search']) > 0:
 					contributor_code = wikidata_search['query']['search'][0]['title']
 				else:
 					contributor_code = None
-					logging.debug(f"Non-WorldCat Entity URL: {marc_contributor['a']}")
+					logging.debug(f"\tNon-WorldCat Entity URL: {marc_contributor['a']}")
 			
 			if contributor_code:
 				OCCUPATION_QUERY = f"""SELECT ?occupation_properties
@@ -489,15 +490,15 @@ WHERE
   wd:{contributor_code} wdt:P106 ?occupations .
   ?occupations wdt:P1687 ?occupation_properties.
 }}"""
-				logging.debug(contributor_code)
+				logging.debug(f"\tChecking contributor: {contributor_code}")
 				occupation_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(OCCUPATION_QUERY)}"
 				occupation_query_results = json.loads(getRequest(occupation_query_url).content)
-				logging.debug(occupation_query_results)
+				logging.debug(f"\tContributor occupation: {occupation_query_results}")
 				occupation_property = occupation_query_results['results']['bindings']
 				if len(occupation_property) > 0:
 					occupation_property = occupation_property[0]['occupation_properties']['value']
 					occupation_property = occupation_property[occupation_property.rfind('/')+1:]
-					logging.debug(occupation_property)
+					logging.debug(f"\tContributor occupation property: {occupation_property}")
 					WORKS_QUERY = f"""SELECT ?works ?worksLabel
 WHERE
 {{
@@ -506,24 +507,24 @@ WHERE
 }}"""
 					works_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(WORKS_QUERY)}"
 					works_query_results = json.loads(getRequest(works_query_url).content)
-					logging.debug(works_query_results)
+					logging.debug(f"\tResults from query for contributor works: {works_query_results}")
 					if len(works_query_results['results']['bindings']) > 0:
 						for w in works_query_results['results']['bindings']:
-							logging.debug(w)
+							logging.debug(f"\tWork: {w}")
 							contributor_works[w['works']['value']] = w['worksLabel']['value']
 
-			logging.debug(contributor_works)
+			logging.debug(f"\tContributor works: {contributor_works}")
 			if len(contributor_works) > 0:
 				cache_connection.hset(marc_contributor['a'], mapping=contributor_works)
 			else:
 				cache_connection.hset(marc_contributor['a'], mapping={ 'empty': 'True' })
 
-		logging.debug(marc_contributor['a'])
+		logging.debug(f"\tContributor name: {marc_contributor['a']}")
 		for found_work in cache_connection.hscan_iter(marc_contributor['a']):
 			for t in match_fields['titles']:
 				l_dist = calculateLevenshteinDistance(t,found_work[1])
 				if l_dist < len(t) * 0.1:
-					logging.debug(len(t) * 0.1)
+					logging.debug(f"\tTitle distance cutoff: {len(t) * 0.1}")
 					score_value = (len(t) - l_dist)/(len(t))
 					if score_value > best_work_score:
 						best_work_score = score_value
@@ -532,11 +533,11 @@ WHERE
 
 
 	if best_work_score > 0 and best_work and best_work_uri:
-		logging.debug(f"{placeholder_work_id}, {json.dumps(match_fields)}, {best_work}, {best_work_score}, {best_work_uri}")
+		logging.debug(f"\tOutputting found: {placeholder_work_id}, {json.dumps(match_fields)}, {best_work}, {best_work_score}, {best_work_uri}")
 		output_writer.writerow([placeholder_work_id,json.dumps(match_fields),best_work,best_work_score,best_work_uri])
 		return best_work_uri
 	else:
-		logging.debug(f"{placeholder_work_id}, {json.dumps(match_fields)}")
+		logging.debug(f"\tOutputting not found: {placeholder_work_id}, {json.dumps(match_fields)}")
 		output_writer.writerow([placeholder_work_id,json.dumps(match_fields)])
 		return None
 
