@@ -272,7 +272,7 @@ def findBestMatch(scores_by_title):
 				best_score = score
 				best_url = url
 				best_score_breakdown = copy.deepcopy(scores_by_title[title]['matches'][match])
-				best_name = name
+				best_name = title
 
 			logging.debug(match)
 			logging.debug(scores_by_title[title]['matches'][match].values())
@@ -375,9 +375,13 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 				i = i + 2
 
 		except Exception as e:
-			logging.debug(e)
-			output_writer.writerow([placeholder_work_id,text_string,query_url,"QUERY ERROR",e])
-			return None, None
+			logging.error(e)
+			if len(match_fields['titles'] == 1):
+				output_writer.writerow([placeholder_work_id,text_string,query_url,"QUERY ERROR",e])
+				return None, None
+			else:
+				# Need some way to log errors that don't break the process so we can come back and fix them later
+				pass
 
 		results_by_title[text_string]['matches'] = matches
 		results_by_title[text_string]['hubs'] = hubs
