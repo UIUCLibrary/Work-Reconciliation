@@ -250,13 +250,13 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 					score_count += 1
 
 					if 'agent' in val:
-						logging.debug(f"\t\tLOC contriubytor name: {val['agent']}")
+						logging.debug(f"\t\tLOC contributor name: {val['agent']}")
 
 						l_dist = calculateLevenshteinDistance(local_agent[0],val['agent'])
 
 						score_value += (len(local_agent[0]) - l_dist) / len(local_agent[0])
 
-				if (score_count > best_score_count or score_value > best_score_value):
+				if (score_value > best_score_value or (score_count > best_score_count and score_value > 0)):
 					best_score_count = score_count
 					best_score_value = score_value
 
