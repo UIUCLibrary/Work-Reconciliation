@@ -557,8 +557,8 @@ def init(args):
 	redis_connected = False
 	while not redis_connected:
 		try:
-			loc_cache_connection = redis.Redis(host=config.get('redis','host'), port=config.get('redis','port'), db=0, decode_responses=True)
-			wiki_cache_connection = redis.Redis(host=config.get('redis','host'), port=config.get('redis','port'), db=1, decode_responses=True)
+			loc_cache_connection = redis.Redis(host=config.get('redis','host'), port=config.get('redis','port'), db=config.get('redis','loc_db'), decode_responses=True)
+			wiki_cache_connection = redis.Redis(host=config.get('redis','host'), port=config.get('redis','port'), db=config.get('redis','wiki_db'), decode_responses=True)
 			if loc_cache_connection.ping() and wiki_cache_connection.ping():
 				redis_connected = True
 		except Exception as e:
