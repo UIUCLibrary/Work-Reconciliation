@@ -276,9 +276,9 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 		logging.debug(f"\t\tfound contributor count: {found_contributor_count}")
 		logging.debug(f"\t\tfound contributor value: {found_contributor_value}")
 		if found_contributor_count > 1:
-			return (2 * (found_contributor_value / found_contributor_count))
+			return (2 * (found_contributor_value / len(local_contributors)))
 		elif found_contributor_count > 0:
-			return (found_contributor_value / found_contributor_count)
+			return (found_contributor_value / len(local_contributors))
 		else:
 			return 0
 	else:
@@ -328,11 +328,13 @@ def findBestMatch(scores_by_title):
 # results.
 def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_writer,logfile,cache_connection,work_uri=None,candidate_hubs=None):
 	results_by_title = {}
+
+	BASE_LC_URL = 'https://id.loc.gov/search/?q='
+	RDFTYPES = "".join([f"+rdftype:{x.rsplit('/',1)[1]}" for x in types])
+	ENCODED_RESOURCE_URL = urllib.parse.quote_plus(resource)
+
 	for text_string in match_fields['titles']:
-		BASE_LC_URL = 'https://id.loc.gov/search/?q='
 		ENCODED_TEXT_STRING = urllib.parse.quote_plus(text_string)
-		RDFTYPES = "".join([f"+rdftype:{x.rsplit('/',1)[1]}" for x in types])
-		ENCODED_RESOURCE_URL = urllib.parse.quote_plus(resource)
 		query_url = f"{BASE_LC_URL}{ENCODED_TEXT_STRING}{RDFTYPES}&q=cs:{ENCODED_RESOURCE_URL}"
 		logging.debug(f"\tConducting LOC search: {query_url}")
 
@@ -429,17 +431,19 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 	logging.debug(f"\tBest match from search results: {selected_url}")
 	logging.debug(f"\tMatch not found: {match_not_found}")
 	if selected_url:
-		logging.debug(f"\tWriting results to spreadsheet: {placeholder_work_id}, {match_fields['titles'][0]}, {query_url}, {json.dumps(selected_breakdown)}, {selected_url}")
-		output_writer.writerow([placeholder_work_id,match_fields['titles'][0],query_url,json.dumps(selected_breakdown),selected_url])
+		encoded_selected_name = urllib.parse.quote_plus(selected_name)
+		selected_query_url = f"{BASE_LC_URL}{encoded_selected_name}{RDFTYPES}&q=cs:{ENCODED_RESOURCE_URL}"
+		logging.debug(f"\tWriting results to spreadsheet: {placeholder_work_id}, {selected_name}, {selected_query_url}, {json.dumps(selected_breakdown)}, {selected_url}")
+		output_writer.writerow([placeholder_work_id,selected_name,selected_query_url,json.dumps(selected_breakdown),selected_url])
 		if 'hubs' in resource:
-			return selected_url, None
+			return selected_url, selected_name, None
 		else:
-			return selected_url, results_by_title[selected_name]['hubs'][selected_url] if len(results_by_title[selected_name]['hubs'][selected_url]) > 0 else None
+			return selected_url, selected_name, results_by_title[selected_name]['hubs'][selected_url] if len(results_by_title[selected_name]['hubs'][selected_url]) > 0 else None
 
 	if match_not_found:
 		logging.debug(f"{placeholder_work_id}, {match_fields['titles'][0]}, {query_url},")
 		output_writer.writerow([placeholder_work_id,match_fields['titles'][0],query_url])
-		return None, None
+		return None, None, None
 
 # Search for a record in Wikidata by finding a listed contributor and searching through
 # their listed works to find the best title match.
@@ -542,11 +546,11 @@ WHERE
 	if best_work_score > 0 and best_work and best_work_uri:
 		logging.debug(f"\tOutputting found: {placeholder_work_id}, {json.dumps(match_fields)}, {best_work}, {best_work_score}, {best_work_uri}")
 		output_writer.writerow([placeholder_work_id,json.dumps(match_fields),best_work,best_work_score,best_work_uri])
-		return best_work_uri
+		return best_work_uri, best_work
 	else:
 		logging.debug(f"\tOutputting not found: {placeholder_work_id}, {json.dumps(match_fields)}")
 		output_writer.writerow([placeholder_work_id,json.dumps(match_fields)])
-		return None
+		return None, None
 
 def clearBlankText(text_array):
 	return " ".join([x for x in text_array if x.strip() != ''])
@@ -600,8 +604,9 @@ def reconcileWorks(args):
 			work_title_text = clearBlankText(work_title)
 			work_types = work.xpath("./rdf:type/@rdf:resource", namespaces={ "rdf": Namespaces.RDF })
 			logging.debug(f"Found work types: {work_types}")
+			uniform_work_title = work.xpath("./bf:expressionOf/bf:Hub/bf:title/bf:Title/bf:mainTitle/text()", namespaces={ "bf": Namespaces.BF })
 
-			variant_titles = work.xpath("./bf:title/bf:VariantTitle", namespaces={ "bf":Namespaces.BF })
+			variant_titles = work.xpath("./bf:title/bf:VariantTitle", namespaces={ "bf": Namespaces.BF })
 			variant_titles_text = [clearBlankText(variant_title.xpath(".//text()")) for variant_title in variant_titles]
 
 			contributors = work.xpath("./bf:contribution/bf:Contribution", namespaces={ "bf": Namespaces.BF })
@@ -618,8 +623,12 @@ def reconcileWorks(args):
 				match_fields = { 'titles': search_titles, 'notes': notes, 'languages': languages, 'contributors': contributors }
 				
 				# Find best match for Work, and if that Work has any linked Hubs, add that to our list of Hubs to check
-				found_work_uri, found_work_associated_hubs = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/works',work_types,writer,logfile_name,cache_connection)
-				found_hub_uri, trash = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/hubs',['http://id.loc.gov/ontologies/bibframe/Work','http://id.loc.gov/ontologies/bibframe/Hub'],writer,logfile_name,cache_connection,found_work_uri,found_work_associated_hubs)
+				found_work_uri, found_work_title, found_work_associated_hubs = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/works',work_types,writer,logfile_name,cache_connection)
+
+				if len(uniform_work_title) > 0:
+					match_fields['titles'] = uniform_work_title + match_fields['titles']
+
+				found_hub_uri, found_work_title, trash = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/hubs',['http://id.loc.gov/ontologies/bibframe/Work','http://id.loc.gov/ontologies/bibframe/Hub'],writer,logfile_name,cache_connection,found_work_uri,found_work_associated_hubs)
 
 			elif args.source == Sources.wikidata:
 				match_fields = { 'titles': search_titles, 'contributors': contributors }
@@ -639,7 +648,7 @@ def reconcileWorks(args):
 				if not found_primary:
 					match_fields['contributors'] = marc_keys
 
-				found_work_uri = searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,writer,logfile_name)
+				found_work_uri, found_work_title = searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,writer,logfile_name)
 
 			# Make Instances point to new URI
 			if found_work_uri:
@@ -657,6 +666,10 @@ def reconcileWorks(args):
 				new_hub.set(f"{{{Namespaces.RDF}}}about",found_hub_uri)
 				hub_type = etree.SubElement(new_hub,f"{{{Namespaces.RDF}}}type")
 				hub_type.set(f"{{{Namespaces.RDF}}}resource","http://id.loc.gov/ontologies/bibframe/Hub")
+				hub_title = etree.SubElement(new_hub,f"{{{Namespaces.BF}}}title")
+				hub_Title = etree.SubElement(hub_title,f"{{{Namespaces.BF}}}Title")
+				hub_mainTitle = etree.SubElement(hub_Title,f"{{{Namespaces.BF}}}mainTitle")
+				hub_mainTitle.text = found_work_title
 				has_expression = etree.SubElement(new_hub,f"{{{Namespaces.BF}}}hasExpression")
 				has_expression.set(f"{{{Namespaces.RDF}}}resource", found_work_uri if found_work_uri else placeholder_work_id)
 
