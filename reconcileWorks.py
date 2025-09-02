@@ -189,8 +189,13 @@ def compareTitles(target_title,candidate_titles):
 # value 0-2.
 def compareContributors(local_contributors,loc_contributors,cache_connection):
 	if len(local_contributors) > 0 and len(loc_contributors) > 0:
+		found_primary_contributor_count = 0
+		found_primary_contributor_value = 0
 		found_contributor_count = 0
 		found_contributor_value = 0
+
+		primary_contributor_count = 0
+		secondary_contributor_count = 0
 
 		logging.debug("\t\tCalculating score based on contributor similarities")
 		loc_values = []
@@ -269,16 +274,31 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 					if len(local_agent) > 0 and 'agent' in val and l_dist == 0:
 						break
 
-			if best_score_count != 0:
-				found_contributor_count += 1
-				found_contributor_value += (best_score_value / best_score_count)
+			if len(local_type) > 0:
+				primary_contributor_count += 1
+				if best_score_count != 0:
+					found_primary_contributor_count += 1
+					found_primary_contributor_value += (best_score_value / best_score_count)
 
-		logging.debug(f"\t\tfound contributor count: {found_contributor_count}")
-		logging.debug(f"\t\tfound contributor value: {found_contributor_value}")
+					logging.debug(f"\t\tfound primary contributor count: {found_primary_contributor_count}")
+					logging.debug(f"\t\tfound primary contributor value: {found_primary_contributor_value}")
+			else:
+				secondary_contributor_count += 1
+				if best_score_count != 0:
+					found_contributor_count += 1
+					found_contributor_value += (best_score_value / best_score_count)
+
+					logging.debug(f"\t\tfound contributor count: {found_contributor_count}")
+					logging.debug(f"\t\tfound contributor value: {found_contributor_value}")
+		if found_primary_contributor_count > 0:
+			if found_primary_contributor_count > 1 or found_contributor_count > 0:
+				return (2 * (found_primary_contributor_value / primary_contributor_count) + (found_contributor_value / secondary_contributor_count))
+			else:
+				return ((found_primary_contributor_value / primary_contributor_count))
 		if found_contributor_count > 1:
-			return (2 * (found_contributor_value / len(local_contributors)))
+			return (2 * (found_contributor_value / secondary_contributor_count))
 		elif found_contributor_count > 0:
-			return (found_contributor_value / len(local_contributors))
+			return (found_contributor_value / secondary_contributor_count)
 		else:
 			return 0
 	else:
