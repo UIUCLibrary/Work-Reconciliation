@@ -10,4 +10,5 @@
 *.numbers
 *.xml
 *.graph
+*.log
 application.config
