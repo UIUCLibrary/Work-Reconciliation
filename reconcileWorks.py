@@ -24,6 +24,7 @@ class Namespaces(str, Enum):
 	BFLC = "http://id.loc.gov/ontologies/bflc/"
 	RDFS = "http://www.w3.org/2000/01/rdf-schema#"
 	MADSRDF = "http://www.loc.gov/mads/rdf/v1#"
+	MARCXML = "http://www.loc.gov/MARC21/slim"
 
 	def __str__(self):
 		return self.value
@@ -572,6 +573,100 @@ WHERE
 		output_writer.writerow([placeholder_work_id,json.dumps(match_fields)])
 		return None, None
 
+def populateContributors(contributors):
+	BASE_LC_URL = 'https://id.loc.gov/search/?q='
+	ENCODED_RESOURCE_URL = urllib.parse.quote_plus('http://id.loc.gov/authorities/names')		
+
+	name_mappings = {}
+	for c in contributors:
+		c_name = c.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": Namespaces.BF,"rdfs": Namespaces.RDFS})
+		logging.debug(f"\tContributor name: {c_name}")
+		c_type = c.xpath("./bf:agent/bf:Agent/rdf:type/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
+		logging.debug(f"\tContributor type: {c_type}")
+
+		if c_name[0] not in name_mappings:
+			name_mappings[c_name[0]] = { 'type': c_type[0], 'elements': [ c ] }
+		else:
+			name_mappings[c_name[0]]['elements'].append(c)
+
+		if 'id' not in name_mappings[c_name[0]]:
+			c_id = c.xpath("./bf:agent/bf:Agent/@rdf:about",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
+			logging.debug(f"\tContributor id: {c_id}")
+			if 'example.org' not in c_id[0]:
+				name_mappings[c_name[0]]['id'] = c_id[0]
+
+	logging.debug(name_mappings)
+	for name in name_mappings:
+		logging.debug(f"\tProcessing: {name}")
+		logging.debug(f"\tContents: {name_mappings[name]}")
+
+		if 'id' not in name_mappings[name]:			
+			if 'Person' in name_mappings[name]['type']:
+				search_on = 'PersonalName'
+			else:
+				search_on = 'CorporateName'
+			RDFTYPES = f"+rdftype:{search_on}"
+			ENCODED_TEXT_STRING = urllib.parse.quote_plus(name)
+			query_url = f"{BASE_LC_URL}{ENCODED_TEXT_STRING}{RDFTYPES}&q=cs:{ENCODED_RESOURCE_URL}"
+			logging.debug(f"\tQUERYING LCNAF: {query_url}")
+
+			best_match_score = None
+			best_match_url = None
+			try:
+				results_tree = etree.HTML(getRequest(query_url).content)
+				result_table = results_tree.xpath("//table[@class='id-std']/tbody/tr")
+				i = 0
+
+				while i < len(result_table):
+#					authorized_heading = result_table[i].xpath("./td/a/text()")
+#					logging.debug(f"\tLCNAF HEADING: {authorized_heading}")
+#					variant_headings = result_table[i+1].xpath("./td[@colspan='5']/span/text()")
+#					logging.debug(f"\tVARIANT LCNAF HEADINGS: {variant_headings}")
+
+#					if len(authorized_heading) > 0 or len(variant_headings) > 0:
+					logging.debug(f"\tFound {name}")
+					found_uri = 'http://id.loc.gov' + result_table[i].xpath("./td/a/@href")[0]
+					logging.debug(f"\t{found_uri}")
+					details_tree = etree.XML(getRequest(f"{found_uri.replace('http','https')}.marcxml.xml").content)
+					if search_on == 'PersonalName':
+						tag_check = "@tag='100' or @tag='400'"
+					else:
+						tag_check = "@tag='110' or @tag='410'"
+					details_title = details_tree.xpath(f"/marcxml:record/marcxml:datafield[{tag_check}]/marcxml:subfield[@code='a']/text()",namespaces={"marcxml": Namespaces.MARCXML})
+					logging.debug(f"\tLCNAF record names: {details_title}")
+					for title_variant in details_title:
+						logging.debug(f"\tTitle: {title_variant}")
+						l_dist = calculateLevenshteinDistance(name,title_variant)
+						logging.debug(f"Distance: {l_dist}")
+						if l_dist < (len(name) * 0.1):
+							if best_match_score:
+								if l_dist < best_match_score:
+									best_match_score = l_dist
+									best_match_url = found_uri
+							else:
+								best_match_score = l_dist
+								best_match_url = found_uri
+
+					if best_match_score and best_match_score == 0:
+						break
+					else:
+						i += 2
+			except Exception as e:
+				logging.error(e)
+
+			if best_match_url:
+				name_mappings[name]['id'] = best_match_url
+
+	for n in name_mappings:
+		logging.debug(f"\tTrying to add URI for name: {n}")
+		logging.debug(f"\tName object: {name_mappings[n]}")
+		if 'id' in name_mappings[n]:
+			for element in name_mappings[n]['elements']:
+				element_id = element.xpath("./bf:agent/bf:Agent/@rdf:about",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
+				if 'example.org' in element_id[0]:
+					agent = element.xpath("./bf:agent/bf:Agent",namespaces={"bf": Namespaces.BF})
+					agent[0].set(f"{{{Namespaces.RDF}}}about",name_mappings[n]['id'])
+
 def clearBlankText(text_array):
 	return " ".join([x for x in text_array if x.strip() != ''])
 
@@ -611,6 +706,9 @@ def reconcileWorks(args):
 	tree = etree.parse(args.input, parser)
 	root = tree.getroot()
 	works = root.xpath('/rdf:RDF/bf:Work', namespaces={ "rdf": Namespaces.RDF, "bf": Namespaces.BF })
+
+	master_contributor_list = root.xpath('/rdf:RDF/bf:Work/bf:contribution/bf:Contribution', namespaces={ "rdf": Namespaces.RDF, "bf": Namespaces.BF })
+	populateContributors(master_contributor_list)
 
 	with open(f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}.tsv",'w') as outfile:
 		writer = csv.writer(outfile,delimiter='\t')

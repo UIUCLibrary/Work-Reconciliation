@@ -1,11 +1,11 @@
 PREFIX bf: <http://id.loc.gov/ontologies/bibframe/>
 
-SELECT ?hub ?hubLabel ?work ?workLabel
+SELECT DISTINCT ?hub ?hubLabel ?work ?workLabel
 WHERE {
-  GRAPH <http://localhost:8890/test1> { 
+  GRAPH <http://localhost:8890/test2> { 
     ?hub rdf:type <http://id.loc.gov/ontologies/bibframe/Hub> .
     ?hub bf:hasExpression ?work .
     ?work bf:title/bf:mainTitle ?workLabel .
-    BIND(STR(?hub) as ?hubLabel).
+    ?hub bf:title/bf:mainTitle ?hubLabel .
   }
 }
