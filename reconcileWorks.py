@@ -432,7 +432,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 
 		except Exception as e:
 			logging.error(e)
-			with open(logfile,'w') as errlog:
+			with open(logfile,'a') as errlog:
 				errlog.write(f"{placeholder_work_id}\n")
 				errlog.write(f"{text_string}\n")
 				errlog.write(f"{query_url}\n")
@@ -718,14 +718,14 @@ def reconcileWorks(args):
 			# Select identifying characteristics of Work, and search based on those values
 			placeholder_work_id = work.xpath("./@rdf:about", namespaces={ "rdf": Namespaces.RDF })[0]
 			logging.debug(f"Processing new Work with placeholder id: {placeholder_work_id}")
-			work_title = work.xpath("./bf:title/bf:Title//text()", namespaces={ "bf": Namespaces.BF })
+			work_title = work.xpath("./bf:title/bf:Title/bf:*/text()", namespaces={ "bf": Namespaces.BF })
 			work_title_text = clearBlankText(work_title)
 			work_types = work.xpath("./rdf:type/@rdf:resource", namespaces={ "rdf": Namespaces.RDF })
 			logging.debug(f"Found work types: {work_types}")
 			uniform_work_title = work.xpath("./bf:expressionOf/bf:Hub/bf:title/bf:Title/bf:mainTitle/text()", namespaces={ "bf": Namespaces.BF })
 
 			variant_titles = work.xpath("./bf:title/bf:VariantTitle", namespaces={ "bf": Namespaces.BF })
-			variant_titles_text = [clearBlankText(variant_title.xpath(".//text()")) for variant_title in variant_titles]
+			variant_titles_text = [clearBlankText(variant_title.xpath("./bf:*/text()", namespaces={ "bf": Namespaces.BF })) for variant_title in variant_titles]
 
 			contributors = work.xpath("./bf:contribution/bf:Contribution", namespaces={ "bf": Namespaces.BF })
 

@@ -6,7 +6,9 @@ WHERE {
   GRAPH <http://localhost:8890/test2> { 
     ?agent rdf:type <http://id.loc.gov/ontologies/bibframe/Agent> .
     ?work bf:contribution/bf:agent ?agent .
+    ?work a bf:Work .
     ?work2 bf:contribution/bf:agent ?agent .
+    ?work2 a bf:Work .
     FILTER(?work != ?work2) .
     ?work bf:title/bf:mainTitle ?workLabel .
     ?agent rdfs:label ?agentLabel .
