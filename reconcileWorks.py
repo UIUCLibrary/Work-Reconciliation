@@ -82,11 +82,14 @@ def getRequest(url):
 			time.sleep(60)
 			result = requests.get(url,timeout=60)
 	except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ValueError) as e:
+		logging.error("ERROR getting request")
 		logging.error(e)
 		try:
 			if result:
 				logging.debug(result.status_code)
-		except:
+		except Exception as e2:
+			logging.error("ERROR logging request error")
+			logging.error(e2)
 			result = BrokenResponse()
 
 	return result
@@ -347,7 +350,7 @@ def findBestMatch(scores_by_title):
 # When Works are being processed, we keep track of any associated Hubs, so if a Work is 
 # selected, thos Hubs are also returned as candidates to be checked alongside the search
 # results.
-def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_writer,logfile,cache_connection,work_uri=None,candidate_hubs=None):
+def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_writer,cache_connection,work_uri=None,candidate_hubs=None):
 	results_by_title = {}
 
 	BASE_LC_URL = 'https://id.loc.gov/search/?q='
@@ -431,18 +434,10 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 				i = i + 2
 
 		except Exception as e:
+			logging.error(placeholder_work_id)
+			logging.error(text_string)
+			logging.error(query_url)
 			logging.error(e)
-			with open(logfile,'a') as errlog:
-				errlog.write(f"{placeholder_work_id}\n")
-				errlog.write(f"{text_string}\n")
-				errlog.write(f"{query_url}\n")
-				errlog.write(f"{e}\n")
-#			if len(match_fields['titles']) == 1:
-#				output_writer.writerow([placeholder_work_id,text_string,query_url,"QUERY ERROR",e])
-#				return None, None
-#			else:
-#				# Need some way to log errors that don't break the process so we can come back and fix them later
-#				pass
 
 		results_by_title[text_string]['matches'] = matches
 		results_by_title[text_string]['hubs'] = hubs
@@ -468,7 +463,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 
 # Search for a record in Wikidata by finding a listed contributor and searching through
 # their listed works to find the best title match.
-def searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,output_writer,logfile):
+def searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,output_writer):
 	BASE_WIKIDATA_URL = "https://www.wikidata.org/w/api.php"
 	BASE_WIKIDATA_SPARQL_URL = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
 
@@ -674,8 +669,18 @@ def init(args):
 	if not args.input.endswith('.xml'):
 		raise Exception("Input file must be an XML file")
 
+	logger = logging.getLogger()
+	stream_handler = logging.StreamHandler()
 	if args.verbose:
-		logging.getLogger().setLevel(logging.DEBUG)
+		stream_handler.setLevel(logging.DEBUG)
+
+	logfile_name = f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}_err.log"
+	file_handler = logging.FileHandler(logfile_name,mode='w')
+	file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s'))
+	file_handler.setLevel(logging.ERROR)
+
+	logger.addHandler(stream_handler)
+	logger.addHandler(file_handler)
 
 	config = configparser.ConfigParser()
 	config.read('application.config')
@@ -691,9 +696,9 @@ def init(args):
 			if cache_connection.ping():
 				redis_connected = True
 		except Exception as e:
-			logging.error(f'Error initializing cache {e}')
+			logger.error(f'Error initializing cache {e}')
 			time.sleep(5)
-			logging.info('Retrying cache initialization')
+			logger.info('Retrying cache initialization')
 
 	os.makedirs(args.output,exist_ok=True)
 
@@ -713,7 +718,6 @@ def reconcileWorks(args):
 	with open(f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}.tsv",'w') as outfile:
 		writer = csv.writer(outfile,delimiter='\t')
 
-		logfile_name = f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}_err.log"
 		for work in works:
 			# Select identifying characteristics of Work, and search based on those values
 			placeholder_work_id = work.xpath("./@rdf:about", namespaces={ "rdf": Namespaces.RDF })[0]
@@ -741,12 +745,12 @@ def reconcileWorks(args):
 				match_fields = { 'titles': search_titles, 'notes': notes, 'languages': languages, 'contributors': contributors }
 				
 				# Find best match for Work, and if that Work has any linked Hubs, add that to our list of Hubs to check
-				found_work_uri, found_work_title, found_work_associated_hubs = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/works',work_types,writer,logfile_name,cache_connection)
+				found_work_uri, found_work_title, found_work_associated_hubs = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/works',work_types,writer,cache_connection)
 
 				if len(uniform_work_title) > 0:
 					match_fields['titles'] = uniform_work_title + match_fields['titles']
 
-				found_hub_uri, found_work_title, trash = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/hubs',['http://id.loc.gov/ontologies/bibframe/Work','http://id.loc.gov/ontologies/bibframe/Hub'],writer,logfile_name,cache_connection,found_work_uri,found_work_associated_hubs)
+				found_hub_uri, found_work_title, trash = searchForRecordLOC(placeholder_work_id,match_fields,'http://id.loc.gov/resources/hubs',['http://id.loc.gov/ontologies/bibframe/Work','http://id.loc.gov/ontologies/bibframe/Hub'],writer,cache_connection,found_work_uri,found_work_associated_hubs)
 
 			elif args.source == Sources.wikidata:
 				match_fields = { 'titles': search_titles, 'contributors': contributors }
@@ -766,7 +770,7 @@ def reconcileWorks(args):
 				if not found_primary:
 					match_fields['contributors'] = marc_keys
 
-				found_work_uri, found_work_title = searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,writer,logfile_name)
+				found_work_uri, found_work_title = searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,writer)
 
 			# Make Instances point to new URI
 			if found_work_uri:
