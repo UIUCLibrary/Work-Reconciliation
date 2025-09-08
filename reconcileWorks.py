@@ -575,6 +575,10 @@ WHERE
 		output_writer.writerow([placeholder_work_id,json.dumps(match_fields)])
 		return None, None
 
+# Find all the contributor labels, save the element that contains them, search for the best match
+# in LOC, then use the URI for that as the id for all instances where the name appears. If there
+# is already a non-example.org URI used in an instance, don't search and just push that to all
+# other instances instead.
 def populateContributors(contributors):
 	logger = logging.getLogger('reconciliation_logger')
 	BASE_LC_URL = 'https://id.loc.gov/search/?q='
@@ -621,12 +625,6 @@ def populateContributors(contributors):
 				i = 0
 
 				while i < len(result_table):
-#					authorized_heading = result_table[i].xpath("./td/a/text()")
-#					logger.debug(f"\tLCNAF HEADING: {authorized_heading}")
-#					variant_headings = result_table[i+1].xpath("./td[@colspan='5']/span/text()")
-#					logger.debug(f"\tVARIANT LCNAF HEADINGS: {variant_headings}")
-
-#					if len(authorized_heading) > 0 or len(variant_headings) > 0:
 					logger.debug(f"\tFound {name}")
 					found_uri = 'http://id.loc.gov' + result_table[i].xpath("./td/a/@href")[0]
 					logger.debug(f"\t{found_uri}")
