@@ -1,4 +1,4 @@
-import argparse, sys, os, logging, requests, csv, urllib.parse, copy, json, configparser, time, redis
+import argparse, sys, os, logging, logging.config, requests, csv, urllib.parse, copy, json, configparser, time, redis
 from lxml import etree
 from enum import Enum
 from redis.commands.json.path import Path
@@ -6,7 +6,7 @@ from limits import RateLimitItemPerMinute
 from limits.storage import MemoryStorage
 from limits.strategies import FixedWindowRateLimiter
 
-logging.basicConfig(level=logging.WARNING,format='%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s',datefmt='%H:%M:%S')
+#logging.basicConfig(level=logging.DEBUG,format='%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s',datefmt='%H:%M:%S')
 
 class BrokenResponse:
 	status_code = '400'
@@ -71,25 +71,26 @@ def normalizeVariant(variant):
 		return variant.encode('utf-8').strip()
 
 def getRequest(url):
+	logger = logging.getLogger('reconciliation_logger')
 	if 'id.loc.gov' in url:
 		while not limiter.hit(loc_limit, "loc"):
-			logging.debug("Hit limit")
+			logger.debug("Hit limit")
 			time.sleep(0.5)
 	try:
 		result = requests.get(url, headers={ 'User-Agent': 'reconcileWorks / 0.1 University Library, University of Illinois' }, timeout=60)
 		if result.status_code == 429:
-			logging.debug(result.headers.get("Retry-After"))
+			logger.debug(result.headers.get("Retry-After"))
 			time.sleep(60)
 			result = requests.get(url,timeout=60)
 	except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ValueError) as e:
-		logging.error("ERROR getting request")
-		logging.error(e)
+		logger.error("ERROR getting request")
+		logger.error(e)
 		try:
 			if result:
-				logging.debug(result.status_code)
+				logger.debug(result.status_code)
 		except Exception as e2:
-			logging.error("ERROR logging request error")
-			logging.error(e2)
+			logger.error("ERROR logging request error")
+			logger.error(e2)
 			result = BrokenResponse()
 
 	return result
@@ -122,16 +123,17 @@ def getNotes(notes):
 # number of notes in the local record because a match is seen as pretty significant
 # since they can be so unique.
 def compareNotes(local_notes,loc_notes):
-	logging.debug(f"\t\tCalculating score based on note similarities")
-	logging.debug(f"\t\tLocal notes: {local_notes}")
-	logging.debug(f"\t\tLOC notes: {loc_notes}")
+	logger = logging.getLogger('reconciliation_logger')
+	logger.debug(f"\t\tCalculating score based on note similarities")
+	logger.debug(f"\t\tLocal notes: {local_notes}")
+	logger.debug(f"\t\tLOC notes: {loc_notes}")
 	if len(local_notes) > 0:
 		found_note_count = 0
 		found_note_value = 0
 		for note in local_notes:
 			for loc_note in loc_notes:
-				logging.debug(f"\t\tLocal note: {note}")
-				logging.debug(f"\t\tLOC note: {loc_note}")
+				logger.debug(f"\t\tLocal note: {note}")
+				logger.debug(f"\t\tLOC note: {loc_note}")
 				score_card = 0
 				score_value = 0
 				for element in note:
@@ -140,7 +142,7 @@ def compareNotes(local_notes,loc_notes):
 							l_dist = calculateLevenshteinDistance(note[element],loc_note[element])
 
 							if l_dist < len(note[element]) * 0.1:
-								logging.debug(f"\t\tMax allowed distance: {len(note[element]) * 0.1}")
+								logger.debug(f"\t\tMax allowed distance: {len(note[element]) * 0.1}")
 								score_card += 1
 								score_value += (len(note[element]) - l_dist)/(len(note[element]))
 						else:
@@ -161,17 +163,18 @@ def compareNotes(local_notes,loc_notes):
 # distance to generate a value between 0 and 1. Highest score is reutrned, but divided 
 # in half to lessen the weight of title matches.
 def compareTitles(target_title,candidate_titles):
+	logger = logging.getLogger('reconciliation_logger')
 	best_fit = 0
-	logging.debug(f"\t\tCalculating score based on title similarities")
+	logger.debug(f"\t\tCalculating score based on title similarities")
 	for candidate in candidate_titles:
-		logging.debug(f"\t\t{target_title}")
-		logging.debug(f"\t\t{candidate}")
+		logger.debug(f"\t\t{target_title}")
+		logger.debug(f"\t\t{candidate}")
 		l_dist = calculateLevenshteinDistance(target_title,candidate)
-		logging.debug(f"\t\tDistance: {l_dist}")
+		logger.debug(f"\t\tDistance: {l_dist}")
 		normalized_value = (len(target_title) - l_dist)/len(target_title)
 		if normalized_value > best_fit:
 			best_fit = normalized_value
-		logging.debug(f"\t\tAdjusted score: {normalized_value}")
+		logger.debug(f"\t\tAdjusted score: {normalized_value}")
 	return (best_fit * 0.5)
 
 # Grab contributor names from LOC record, either taking the plain text, or following links and
@@ -192,6 +195,7 @@ def compareTitles(target_title,candidate_titles):
 # is two times the score over the number of potential contributors, which will result in some
 # value 0-2.
 def compareContributors(local_contributors,loc_contributors,cache_connection):
+	logger = logging.getLogger('reconciliation_logger')
 	if len(local_contributors) > 0 and len(loc_contributors) > 0:
 		found_primary_contributor_count = 0
 		found_primary_contributor_value = 0
@@ -201,7 +205,7 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 		primary_contributor_count = 0
 		secondary_contributor_count = 0
 
-		logging.debug("\t\tCalculating score based on contributor similarities")
+		logger.debug("\t\tCalculating score based on contributor similarities")
 		loc_values = []
 		for loc_contributor in loc_contributors:
 			loc_contributor_values = {}
@@ -210,7 +214,7 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 				loc_contributor_values['type'] = loc_type[0]
 
 			loc_agent_links = loc_contributor.xpath("./bf:agent/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
-			logging.debug(f"\t\tLOC contributor links: {loc_agent_links}")
+			logger.debug(f"\t\tLOC contributor links: {loc_agent_links}")
 			if len(loc_agent_links) > 0:
 				res = cache_connection.get(loc_agent_links[0])
 				if res:
@@ -228,7 +232,7 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 							loc_contributor_values['agent'] = agent_label[0]
 							cache_connection.set(loc_agent_links[0],agent_label[0])
 					else:
-						logging.debug(f"\t\tAgent link is not from loc: {loc_agent_links[0]}")
+						logger.debug(f"\t\tAgent link is not from loc: {loc_agent_links[0]}")
 			else:
 				loc_agent_list = loc_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": Namespaces.BF,"rdfs": Namespaces.RDFS})
 				if len(loc_agent_list) > 0:
@@ -236,7 +240,7 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 
 			if len(loc_contributor_values) > 0:
 				loc_values.append(loc_contributor_values)
-		logging.debug(f"\t\tLOC contributor names: {loc_values}")
+		logger.debug(f"\t\tLOC contributor names: {loc_values}")
 
 		for local_contributor in local_contributors:
 			best_score_count = 0
@@ -244,16 +248,16 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 
 			local_type = local_contributor.xpath("./rdf:type/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 			local_agent = local_contributor.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": Namespaces.BF,"rdfs": Namespaces.RDFS})
-			logging.debug(f"\t\tLooking for a match on local contributor {local_agent[0]}")
+			logger.debug(f"\t\tLooking for a match on local contributor {local_agent[0]}")
 			for val in loc_values:
-				logging.debug(f"\t\tChecking LOC contributor {val}")
+				logger.debug(f"\t\tChecking LOC contributor {val}")
 				score_count = 0
 				score_value = 0
 
-				logging.debug(f"\t\tscore value: {score_value}")
+				logger.debug(f"\t\tscore value: {score_value}")
 				if len(local_agent) > 0:
 					if 'agent' in val:
-						logging.debug(f"\t\tLOC contributor name: {val['agent']}")
+						logger.debug(f"\t\tLOC contributor name: {val['agent']}")
 
 						l_dist = calculateLevenshteinDistance(local_agent[0],val['agent'])
 						normalized_score = (len(local_agent[0]) - l_dist) / len(local_agent[0])
@@ -267,13 +271,13 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 									score_count += 1
 									score_value += 1
 
-				logging.debug(f"\t\tscore value: {score_value}")
+				logger.debug(f"\t\tscore value: {score_value}")
 				if (score_value > best_score_value or (score_count > best_score_count and score_value > 0.5)):
 					best_score_count = score_count
 					best_score_value = score_value
 
-					logging.debug(f"\t\tupdated score count: {best_score_count}")
-					logging.debug(f"\t\tupdated score value: {best_score_value}")
+					logger.debug(f"\t\tupdated score count: {best_score_count}")
+					logger.debug(f"\t\tupdated score value: {best_score_value}")
 
 					if len(local_agent) > 0 and 'agent' in val and l_dist == 0:
 						break
@@ -284,16 +288,16 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 					found_primary_contributor_count += 1
 					found_primary_contributor_value += (best_score_value / best_score_count)
 
-					logging.debug(f"\t\tfound primary contributor count: {found_primary_contributor_count}")
-					logging.debug(f"\t\tfound primary contributor value: {found_primary_contributor_value}")
+					logger.debug(f"\t\tfound primary contributor count: {found_primary_contributor_count}")
+					logger.debug(f"\t\tfound primary contributor value: {found_primary_contributor_value}")
 			else:
 				secondary_contributor_count += 1
 				if best_score_count != 0:
 					found_contributor_count += 1
 					found_contributor_value += (best_score_value / best_score_count)
 
-					logging.debug(f"\t\tfound contributor count: {found_contributor_count}")
-					logging.debug(f"\t\tfound contributor value: {found_contributor_value}")
+					logger.debug(f"\t\tfound contributor count: {found_contributor_count}")
+					logger.debug(f"\t\tfound contributor value: {found_contributor_value}")
 		if found_primary_contributor_count > 0:
 			if found_primary_contributor_count > 1 or found_contributor_count > 0:
 				return (2 * (found_primary_contributor_value / primary_contributor_count) + (found_contributor_value / secondary_contributor_count))
@@ -317,12 +321,13 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 # no result meets that threshold, we return null values to indicate that no match has been found.
 # The threshold can be adjusted in the future to calibrate how strict the matches should be.
 def findBestMatch(scores_by_title):
+	logger = logging.getLogger('reconciliation_logger')
 	best_score = 0
 	best_score_breakdown = {}
 	best_url = None
 	best_name = None
 	for title in scores_by_title:
-		logging.debug(f"\t\tSearching for best match on results from {title}")
+		logger.debug(f"\t\tSearching for best match on results from {title}")
 		for match in scores_by_title[title]['matches']:
 			url = match
 			score = sum(scores_by_title[title]['matches'][match].values())
@@ -332,12 +337,12 @@ def findBestMatch(scores_by_title):
 				best_score_breakdown = copy.deepcopy(scores_by_title[title]['matches'][match])
 				best_name = title
 
-			logging.debug(f"\t\tScoring {match}")
-			logging.debug(f"\t\tIndividual scores: {scores_by_title[title]['matches'][match]}")
-			logging.debug(f"\t\tFinal score: {score}")
+			logger.debug(f"\t\tScoring {match}")
+			logger.debug(f"\t\tIndividual scores: {scores_by_title[title]['matches'][match]}")
+			logger.debug(f"\t\tFinal score: {score}")
 
-	logging.debug(f"\t\tBest score from search results: {best_score}")
-	logging.debug(f"\t\tBest name from search results: {best_name}")
+	logger.debug(f"\t\tBest score from search results: {best_score}")
+	logger.debug(f"\t\tBest name from search results: {best_name}")
 	return (best_url, best_name, best_score_breakdown, False if best_url else True)
 
 # Search LOC based on title text, types and specify if searching for a Work or Hub.
@@ -351,6 +356,7 @@ def findBestMatch(scores_by_title):
 # selected, thos Hubs are also returned as candidates to be checked alongside the search
 # results.
 def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_writer,cache_connection,work_uri=None,candidate_hubs=None):
+	logger = logging.getLogger('reconciliation_logger')
 	results_by_title = {}
 
 	BASE_LC_URL = 'https://id.loc.gov/search/?q='
@@ -360,7 +366,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 	for text_string in match_fields['titles']:
 		ENCODED_TEXT_STRING = urllib.parse.quote_plus(text_string)
 		query_url = f"{BASE_LC_URL}{ENCODED_TEXT_STRING}{RDFTYPES}&q=cs:{ENCODED_RESOURCE_URL}"
-		logging.debug(f"\tConducting LOC search: {query_url}")
+		logger.debug(f"\tConducting LOC search: {query_url}")
 
 		match_not_found = True
 		i = 0
@@ -373,27 +379,27 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 
 			while i < len(result_table):
 				authorized_heading = result_table[i].xpath("./td/a/text()")
-				logging.debug(f"\tAUTHORIZED HEADING: {authorized_heading}")
+				logger.debug(f"\tAUTHORIZED HEADING: {authorized_heading}")
 				variant_headings = result_table[i+1].xpath("./td[@colspan='5']/text()")
-				logging.debug(f"\tVARIANT HEADINGS: {variant_headings}")
+				logger.debug(f"\tVARIANT HEADINGS: {variant_headings}")
 				if len(variant_headings) > 0:
 					variant_headings = map(normalizeVariant,variant_headings[0].split(';'))
 
 				if len(authorized_heading) > 0 or len(variant_headings) > 0:
-					logging.debug(f"\tFound {text_string}")
+					logger.debug(f"\tFound {text_string}")
 					found_uri = 'http://id.loc.gov' + result_table[i].xpath("./td/a/@href")[0]
-					logging.debug(f"\t{found_uri}")
+					logger.debug(f"\t{found_uri}")
 					details_tree = etree.XML(getRequest(f"{found_uri.replace('http','https')}.bibframe.rdf").content)
 					details_title = details_tree.xpath("/rdf:RDF/bf:Work/bf:title/bf:Title/bf:mainTitle/text()",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
-					logging.debug(f"\tTitle from record: {details_title}")
+					logger.debug(f"\tTitle from record: {details_title}")
 					details_variant_title = details_tree.xpath("/rdf:RDF/bf:Work/bf:title/bf:VariantTitle/bf:mainTitle/text()",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
-					logging.debug(f"\tVariant titles from record: {details_variant_title}")
+					logger.debug(f"\tVariant titles from record: {details_variant_title}")
 					found_titles = set(authorized_heading + variant_headings + details_title + details_variant_title)
 
-					logging.debug(f"\tALL SEARCH TITLES: {found_titles}")
+					logger.debug(f"\tALL SEARCH TITLES: {found_titles}")
 					matches[found_uri] = { 'title': compareTitles(text_string,found_titles) }
 
-					logging.debug(f"Searching for fields: {match_fields}")
+					logger.debug(f"Searching for fields: {match_fields}")
 					if len(match_fields['languages']) > 0:
 						record_languages = details_tree.xpath("/rdf:RDF/bf:Work/bf:language/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 						language_match_count = 0
@@ -406,7 +412,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 					if len(match_fields['contributors']) > 0:
 						record_contributors = details_tree.xpath("/rdf:RDF/bf:Work/bf:contribution/bf:Contribution", namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 						matches[found_uri]['contributors'] = compareContributors(match_fields['contributors'],record_contributors,cache_connection)
-						logging.debug(f"\tMatches updated with contributor: {matches[found_uri]}")
+						logger.debug(f"\tMatches updated with contributor: {matches[found_uri]}")
 
 					if len(match_fields['notes']) > 0:
 						record_notes = details_tree.xpath("/rdf:RDF/bf:Work/bf:note/bf:Note",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
@@ -414,7 +420,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 						notes_b = getNotes(record_notes)
 
 						matches[found_uri]['notes'] = compareNotes(notes_a,notes_b)
-						logging.debug(f"\tMatches updated with notes: {matches[found_uri]}")
+						logger.debug(f"\tMatches updated with notes: {matches[found_uri]}")
 
 					if 'hubs' in resource:
 						# Check list of pre-identified hubs for the current search result, if that isn't 
@@ -424,7 +430,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 							matches[found_uri]['hub'] = 1
 						else:
 							record_works = details_tree.xpath("/rdf:RDF/bf:Work/bf:hasExpression/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
-							logging.debug(f"\tHub hasExpression list: {record_works}")
+							logger.debug(f"\tHub hasExpression list: {record_works}")
 							if work_uri in record_works:
 								matches[found_uri]['hub'] = 1
 					else:
@@ -434,22 +440,22 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 				i = i + 2
 
 		except Exception as e:
-			logging.error(placeholder_work_id)
-			logging.error(text_string)
-			logging.error(query_url)
-			logging.error(e)
+			logger.error(placeholder_work_id)
+			logger.error(text_string)
+			logger.error(query_url)
+			logger.error(e)
 
 		results_by_title[text_string]['matches'] = matches
 		results_by_title[text_string]['hubs'] = hubs
 
-	logging.debug(f"\tScores for all search results: {results_by_title}")
+	logger.debug(f"\tScores for all search results: {results_by_title}")
 	selected_url, selected_name, selected_breakdown, match_not_found = findBestMatch(results_by_title)
-	logging.debug(f"\tBest match from search results: {selected_url}")
-	logging.debug(f"\tMatch not found: {match_not_found}")
+	logger.debug(f"\tBest match from search results: {selected_url}")
+	logger.debug(f"\tMatch not found: {match_not_found}")
 	if selected_url:
 		encoded_selected_name = urllib.parse.quote_plus(selected_name)
 		selected_query_url = f"{BASE_LC_URL}{encoded_selected_name}{RDFTYPES}&q=cs:{ENCODED_RESOURCE_URL}"
-		logging.debug(f"\tWriting results to spreadsheet: {placeholder_work_id}, {selected_name}, {selected_query_url}, {json.dumps(selected_breakdown)}, {selected_url}")
+		logger.debug(f"\tWriting results to spreadsheet: {placeholder_work_id}, {selected_name}, {selected_query_url}, {json.dumps(selected_breakdown)}, {selected_url}")
 		output_writer.writerow([placeholder_work_id,selected_name,selected_query_url,json.dumps(selected_breakdown),selected_url])
 		if 'hubs' in resource:
 			return selected_url, selected_name, None
@@ -457,13 +463,14 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 			return selected_url, selected_name, results_by_title[selected_name]['hubs'][selected_url] if len(results_by_title[selected_name]['hubs'][selected_url]) > 0 else None
 
 	if match_not_found:
-		logging.debug(f"{placeholder_work_id}, {match_fields['titles'][0]}, {query_url},")
+		logger.debug(f"{placeholder_work_id}, {match_fields['titles'][0]}, {query_url},")
 		output_writer.writerow([placeholder_work_id,match_fields['titles'][0],query_url])
 		return None, None, None
 
 # Search for a record in Wikidata by finding a listed contributor and searching through
 # their listed works to find the best title match.
 def searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,output_writer):
+	logger = logging.getLogger('reconciliation_logger')
 	BASE_WIKIDATA_URL = "https://www.wikidata.org/w/api.php"
 	BASE_WIKIDATA_SPARQL_URL = "https://query.wikidata.org/bigdata/namespace/wdq/sparql"
 
@@ -473,9 +480,9 @@ def searchForRecordWiki(placeholder_work_id,match_fields,cache_connection,output
 	for contributor in match_fields['contributors']:
 		split_contributor = contributor.split('$')
 		split_contributor.pop(0)
-		logging.debug(f"\tContributor: {split_contributor}")
+		logger.debug(f"\tContributor: {split_contributor}")
 		marc_contributor = { x[0]: x[1:] for x in split_contributor }
-		logging.debug(f"\tReformatted contributor: {marc_contributor}")
+		logger.debug(f"\tReformatted contributor: {marc_contributor}")
 		res = cache_connection.hget(marc_contributor['a'],'empty')
 
 		if res == 'True':
@@ -493,7 +500,7 @@ WHERE
 }}"""
 					sparql_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(SPARQL_QUERY)}"
 					query_results = json.loads(getRequest(sparql_query_url).content)
-					logging.debug(f"\tContributor record from OCLC URI: {query_results}")
+					logger.debug(f"\tContributor record from OCLC URI: {query_results}")
 					if len(query_results['results']['bindings']) > 0:
 						contributor_code = query_results['results']['bindings'][0]['contrib']['value']
 						contributor_code = contributor_code[contributor_code.rfind('/')+1:]
@@ -503,12 +510,12 @@ WHERE
 				ENCODED_CONTRIBUTOR = urllib.parse.quote_plus(marc_contributor['a'])
 				wikidata_query = f"{BASE_WIKIDATA_URL}?action=query&list=search&srsearch={ENCODED_CONTRIBUTOR}&format=json"
 				wikidata_search = json.loads(getRequest(wikidata_query).content)
-				logging.debug(f"\tSerach results for contributor: {wikidata_search}")
+				logger.debug(f"\tSerach results for contributor: {wikidata_search}")
 				if len(wikidata_search['query']['search']) > 0:
 					contributor_code = wikidata_search['query']['search'][0]['title']
 				else:
 					contributor_code = None
-					logging.debug(f"\tNon-WorldCat Entity URL: {marc_contributor['a']}")
+					logger.debug(f"\tNon-WorldCat Entity URL: {marc_contributor['a']}")
 			
 			if contributor_code:
 				OCCUPATION_QUERY = f"""SELECT ?occupation_properties
@@ -517,15 +524,15 @@ WHERE
   wd:{contributor_code} wdt:P106 ?occupations .
   ?occupations wdt:P1687 ?occupation_properties.
 }}"""
-				logging.debug(f"\tChecking contributor: {contributor_code}")
+				logger.debug(f"\tChecking contributor: {contributor_code}")
 				occupation_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(OCCUPATION_QUERY)}"
 				occupation_query_results = json.loads(getRequest(occupation_query_url).content)
-				logging.debug(f"\tContributor occupation: {occupation_query_results}")
+				logger.debug(f"\tContributor occupation: {occupation_query_results}")
 				occupation_property = occupation_query_results['results']['bindings']
 				if len(occupation_property) > 0:
 					occupation_property = occupation_property[0]['occupation_properties']['value']
 					occupation_property = occupation_property[occupation_property.rfind('/')+1:]
-					logging.debug(f"\tContributor occupation property: {occupation_property}")
+					logger.debug(f"\tContributor occupation property: {occupation_property}")
 					WORKS_QUERY = f"""SELECT ?works ?worksLabel
 WHERE
 {{
@@ -534,24 +541,24 @@ WHERE
 }}"""
 					works_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(WORKS_QUERY)}"
 					works_query_results = json.loads(getRequest(works_query_url).content)
-					logging.debug(f"\tResults from query for contributor works: {works_query_results}")
+					logger.debug(f"\tResults from query for contributor works: {works_query_results}")
 					if len(works_query_results['results']['bindings']) > 0:
 						for w in works_query_results['results']['bindings']:
-							logging.debug(f"\tWork: {w}")
+							logger.debug(f"\tWork: {w}")
 							contributor_works[w['works']['value']] = w['worksLabel']['value']
 
-			logging.debug(f"\tContributor works: {contributor_works}")
+			logger.debug(f"\tContributor works: {contributor_works}")
 			if len(contributor_works) > 0:
 				cache_connection.hset(marc_contributor['a'], mapping=contributor_works)
 			else:
 				cache_connection.hset(marc_contributor['a'], mapping={ 'empty': 'True' })
 
-		logging.debug(f"\tContributor name: {marc_contributor['a']}")
+		logger.debug(f"\tContributor name: {marc_contributor['a']}")
 		for found_work in cache_connection.hscan_iter(marc_contributor['a']):
 			for t in match_fields['titles']:
 				l_dist = calculateLevenshteinDistance(t,found_work[1])
 				if l_dist < len(t) * 0.1:
-					logging.debug(f"\tTitle distance cutoff: {len(t) * 0.1}")
+					logger.debug(f"\tTitle distance cutoff: {len(t) * 0.1}")
 					score_value = (len(t) - l_dist)/(len(t))
 					if score_value > best_work_score:
 						best_work_score = score_value
@@ -560,24 +567,25 @@ WHERE
 
 
 	if best_work_score > 0 and best_work and best_work_uri:
-		logging.debug(f"\tOutputting found: {placeholder_work_id}, {json.dumps(match_fields)}, {best_work}, {best_work_score}, {best_work_uri}")
+		logger.debug(f"\tOutputting found: {placeholder_work_id}, {json.dumps(match_fields)}, {best_work}, {best_work_score}, {best_work_uri}")
 		output_writer.writerow([placeholder_work_id,json.dumps(match_fields),best_work,best_work_score,best_work_uri])
 		return best_work_uri, best_work
 	else:
-		logging.debug(f"\tOutputting not found: {placeholder_work_id}, {json.dumps(match_fields)}")
+		logger.debug(f"\tOutputting not found: {placeholder_work_id}, {json.dumps(match_fields)}")
 		output_writer.writerow([placeholder_work_id,json.dumps(match_fields)])
 		return None, None
 
 def populateContributors(contributors):
+	logger = logging.getLogger('reconciliation_logger')
 	BASE_LC_URL = 'https://id.loc.gov/search/?q='
 	ENCODED_RESOURCE_URL = urllib.parse.quote_plus('http://id.loc.gov/authorities/names')		
 
 	name_mappings = {}
 	for c in contributors:
 		c_name = c.xpath("./bf:agent/bf:Agent/rdfs:label/text()",namespaces={"bf": Namespaces.BF,"rdfs": Namespaces.RDFS})
-		logging.debug(f"\tContributor name: {c_name}")
+		logger.debug(f"\tContributor name: {c_name}")
 		c_type = c.xpath("./bf:agent/bf:Agent/rdf:type/@rdf:resource",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
-		logging.debug(f"\tContributor type: {c_type}")
+		logger.debug(f"\tContributor type: {c_type}")
 
 		if c_name[0] not in name_mappings:
 			name_mappings[c_name[0]] = { 'type': c_type[0], 'elements': [ c ] }
@@ -586,14 +594,14 @@ def populateContributors(contributors):
 
 		if 'id' not in name_mappings[c_name[0]]:
 			c_id = c.xpath("./bf:agent/bf:Agent/@rdf:about",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
-			logging.debug(f"\tContributor id: {c_id}")
+			logger.debug(f"\tContributor id: {c_id}")
 			if 'example.org' not in c_id[0]:
 				name_mappings[c_name[0]]['id'] = c_id[0]
 
-	logging.debug(name_mappings)
+	logger.debug(name_mappings)
 	for name in name_mappings:
-		logging.debug(f"\tProcessing: {name}")
-		logging.debug(f"\tContents: {name_mappings[name]}")
+		logger.debug(f"\tProcessing: {name}")
+		logger.debug(f"\tContents: {name_mappings[name]}")
 
 		if 'id' not in name_mappings[name]:			
 			if 'Person' in name_mappings[name]['type']:
@@ -603,7 +611,7 @@ def populateContributors(contributors):
 			RDFTYPES = f"+rdftype:{search_on}"
 			ENCODED_TEXT_STRING = urllib.parse.quote_plus(name)
 			query_url = f"{BASE_LC_URL}{ENCODED_TEXT_STRING}{RDFTYPES}&q=cs:{ENCODED_RESOURCE_URL}"
-			logging.debug(f"\tQUERYING LCNAF: {query_url}")
+			logger.debug(f"\tQUERYING LCNAF: {query_url}")
 
 			best_match_score = None
 			best_match_url = None
@@ -614,25 +622,25 @@ def populateContributors(contributors):
 
 				while i < len(result_table):
 #					authorized_heading = result_table[i].xpath("./td/a/text()")
-#					logging.debug(f"\tLCNAF HEADING: {authorized_heading}")
+#					logger.debug(f"\tLCNAF HEADING: {authorized_heading}")
 #					variant_headings = result_table[i+1].xpath("./td[@colspan='5']/span/text()")
-#					logging.debug(f"\tVARIANT LCNAF HEADINGS: {variant_headings}")
+#					logger.debug(f"\tVARIANT LCNAF HEADINGS: {variant_headings}")
 
 #					if len(authorized_heading) > 0 or len(variant_headings) > 0:
-					logging.debug(f"\tFound {name}")
+					logger.debug(f"\tFound {name}")
 					found_uri = 'http://id.loc.gov' + result_table[i].xpath("./td/a/@href")[0]
-					logging.debug(f"\t{found_uri}")
+					logger.debug(f"\t{found_uri}")
 					details_tree = etree.XML(getRequest(f"{found_uri.replace('http','https')}.marcxml.xml").content)
 					if search_on == 'PersonalName':
 						tag_check = "@tag='100' or @tag='400'"
 					else:
 						tag_check = "@tag='110' or @tag='410'"
 					details_title = details_tree.xpath(f"/marcxml:record/marcxml:datafield[{tag_check}]/marcxml:subfield[@code='a']/text()",namespaces={"marcxml": Namespaces.MARCXML})
-					logging.debug(f"\tLCNAF record names: {details_title}")
+					logger.debug(f"\tLCNAF record names: {details_title}")
 					for title_variant in details_title:
-						logging.debug(f"\tTitle: {title_variant}")
+						logger.debug(f"\tTitle: {title_variant}")
 						l_dist = calculateLevenshteinDistance(name,title_variant)
-						logging.debug(f"Distance: {l_dist}")
+						logger.debug(f"Distance: {l_dist}")
 						if l_dist < (len(name) * 0.1):
 							if best_match_score:
 								if l_dist < best_match_score:
@@ -647,14 +655,14 @@ def populateContributors(contributors):
 					else:
 						i += 2
 			except Exception as e:
-				logging.error(e)
+				logger.error(e)
 
 			if best_match_url:
 				name_mappings[name]['id'] = best_match_url
 
 	for n in name_mappings:
-		logging.debug(f"\tTrying to add URI for name: {n}")
-		logging.debug(f"\tName object: {name_mappings[n]}")
+		logger.debug(f"\tTrying to add URI for name: {n}")
+		logger.debug(f"\tName object: {name_mappings[n]}")
 		if 'id' in name_mappings[n]:
 			for element in name_mappings[n]['elements']:
 				element_id = element.xpath("./bf:agent/bf:Agent/@rdf:about",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
@@ -669,18 +677,63 @@ def init(args):
 	if not args.input.endswith('.xml'):
 		raise Exception("Input file must be an XML file")
 
-	logger = logging.getLogger()
-	stream_handler = logging.StreamHandler()
-	if args.verbose:
-		stream_handler.setLevel(logging.DEBUG)
-
 	logfile_name = f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}_err.log"
-	file_handler = logging.FileHandler(logfile_name,mode='w')
-	file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s'))
-	file_handler.setLevel(logging.ERROR)
+	#	log_formatter = logging.Formatter('%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s')
+	if args.verbose:
+		log_level = 'DEBUG'
+	else:
+		log_level = 'WARNING'
 
-	logger.addHandler(stream_handler)
-	logger.addHandler(file_handler)
+	LOGGING_CONFIG = {
+		'version': 1,
+		'disable_existing_loggers': False,
+		'formatters': {
+			'default': {
+				'format': '%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s'
+			}
+		},
+		'handlers': {
+			'file': {
+				'level': 'WARNING',
+				'class': 'logging.FileHandler',
+				'filename': logfile_name,
+				'formatter': 'default',
+				'mode': 'w'
+			},
+			'stdout': {
+				'level': log_level,
+				'class': 'logging.StreamHandler',
+				'formatter': 'default'
+			}
+		},
+		'loggers': {
+			'reconciliation_logger': {
+				'handlers': ['file','stdout'],
+				'level': log_level,
+				'propagate': True
+			}
+		}
+	}
+
+	logging.config.dictConfig(LOGGING_CONFIG)
+	logger = logging.getLogger('reconciliation_logger')
+#	stream_handler = logging.StreamHandler()
+#	if args.verbose:
+#	stream_handler.setLevel(logging.DEBUG)
+#	stream_handler.setFormatter(log_formatter)
+
+#	file_handler = logging.FileHandler(logfile_name,mode='w')
+#	file_handler.setFormatter(log_formatter)
+#	file_handler.setLevel(logging.ERROR)
+
+#	logger.addHandler(stream_handler)
+#	logger.addHandler(file_handler)
+
+	logger.debug("debug")
+	logger.info("info")
+	logger.warning("warning")
+	logger.error("error")
+	logger.critical("critical")
 
 	config = configparser.ConfigParser()
 	config.read('application.config')
@@ -706,6 +759,7 @@ def init(args):
 
 def reconcileWorks(args):
 	cache_connection = init(args)
+	logger = logging.getLogger('reconciliation_logger')
 	
 	parser = etree.XMLParser(remove_blank_text=True)
 	tree = etree.parse(args.input, parser)
@@ -721,11 +775,11 @@ def reconcileWorks(args):
 		for work in works:
 			# Select identifying characteristics of Work, and search based on those values
 			placeholder_work_id = work.xpath("./@rdf:about", namespaces={ "rdf": Namespaces.RDF })[0]
-			logging.debug(f"Processing new Work with placeholder id: {placeholder_work_id}")
+			logger.debug(f"Processing new Work with placeholder id: {placeholder_work_id}")
 			work_title = work.xpath("./bf:title/bf:Title/bf:*/text()", namespaces={ "bf": Namespaces.BF })
 			work_title_text = clearBlankText(work_title)
 			work_types = work.xpath("./rdf:type/@rdf:resource", namespaces={ "rdf": Namespaces.RDF })
-			logging.debug(f"Found work types: {work_types}")
+			logger.debug(f"Found work types: {work_types}")
 			uniform_work_title = work.xpath("./bf:expressionOf/bf:Hub/bf:title/bf:Title/bf:mainTitle/text()", namespaces={ "bf": Namespaces.BF })
 
 			variant_titles = work.xpath("./bf:title/bf:VariantTitle", namespaces={ "bf": Namespaces.BF })
