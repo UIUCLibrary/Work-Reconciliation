@@ -717,23 +717,6 @@ def init(args):
 
 	logging.config.dictConfig(LOGGING_CONFIG)
 	logger = logging.getLogger('reconciliation_logger')
-#	stream_handler = logging.StreamHandler()
-#	if args.verbose:
-#	stream_handler.setLevel(logging.DEBUG)
-#	stream_handler.setFormatter(log_formatter)
-
-#	file_handler = logging.FileHandler(logfile_name,mode='w')
-#	file_handler.setFormatter(log_formatter)
-#	file_handler.setLevel(logging.ERROR)
-
-#	logger.addHandler(stream_handler)
-#	logger.addHandler(file_handler)
-
-	logger.debug("debug")
-	logger.info("info")
-	logger.warning("warning")
-	logger.error("error")
-	logger.critical("critical")
 
 	config = configparser.ConfigParser()
 	config.read('application.config')
