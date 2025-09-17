@@ -1,0 +1,13 @@
+PREFIX bf: <http://id.loc.gov/ontologies/bibframe/>
+
+SELECT COUNT(DISTINCT ?work)
+WHERE {
+  GRAPH <http://localhost:8890/test3> { 
+    ?work rdf:type <http://id.loc.gov/ontologies/bibframe/Work> .
+    ?work bf:hasInstance ?instance .
+    FILTER NOT EXISTS {
+        ?work bf:hasInstance ?instance2 .
+        FILTER (?instance != ?instance2) .
+    }
+  }
+}

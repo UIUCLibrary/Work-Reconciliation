@@ -1,0 +1,13 @@
+PREFIX bf: <http://id.loc.gov/ontologies/bibframe/>
+
+SELECT DISTINCT ?hub ?work
+WHERE {
+  GRAPH <http://localhost:8890/test2> { 
+    ?hub rdf:type <http://id.loc.gov/ontologies/bibframe/Hub> .
+    ?hub bf:hasExpression ?work .
+    FILTER NOT EXISTS {
+        ?hub bf:hasExpression ?work2 .
+        FILTER (?work != ?work2) .
+    }
+  }
+}

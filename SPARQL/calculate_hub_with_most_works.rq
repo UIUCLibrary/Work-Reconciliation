@@ -1,0 +1,9 @@
+PREFIX bf: <http://id.loc.gov/ontologies/bibframe/>
+
+SELECT ?hub COUNT(DISTINCT ?work)
+WHERE {
+  GRAPH <http://localhost:8890/test2> { 
+    ?hub rdf:type <http://id.loc.gov/ontologies/bibframe/Hub> .
+    ?hub bf:hasExpression ?work .
+  }
+}

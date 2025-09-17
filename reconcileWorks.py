@@ -1,12 +1,11 @@
-import argparse, sys, os, logging, logging.config, requests, csv, urllib.parse, copy, json, configparser, time, redis
+import argparse, sys, os, logging, logging.config, requests, csv, urllib.parse, copy, json, configparser, time, datetime, redis
 from lxml import etree
 from enum import Enum
 from redis.commands.json.path import Path
 from limits import RateLimitItemPerMinute
 from limits.storage import MemoryStorage
 from limits.strategies import FixedWindowRateLimiter
-
-#logging.basicConfig(level=logging.DEBUG,format='%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s',datefmt='%H:%M:%S')
+from datetime import timedelta
 
 class BrokenResponse:
 	status_code = '400'
@@ -72,26 +71,37 @@ def normalizeVariant(variant):
 
 def getRequest(url):
 	logger = logging.getLogger('reconciliation_logger')
-	if 'id.loc.gov' in url:
-		while not limiter.hit(loc_limit, "loc"):
-			logger.debug("Hit limit")
-			time.sleep(0.5)
-	try:
-		result = requests.get(url, headers={ 'User-Agent': 'reconcileWorks / 0.1 University Library, University of Illinois' }, timeout=60)
-		if result.status_code == 429:
-			logger.debug(result.headers.get("Retry-After"))
-			time.sleep(60)
-			result = requests.get(url,timeout=60)
-	except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ValueError) as e:
-		logger.error("ERROR getting request")
-		logger.error(e)
+	MAX_RETRIES = 10
+
+	for attempt_number in range(MAX_RETRIES):
 		try:
-			if result:
-				logger.debug(result.status_code)
-		except Exception as e2:
-			logger.error("ERROR logging request error")
-			logger.error(e2)
-			result = BrokenResponse()
+			if 'id.loc.gov' in url:
+				while not limiter.hit(loc_limit, "loc"):
+					logger.debug("Hit limit")
+					time.sleep(0.5)
+
+			result = requests.get(url, headers={ 'User-Agent': 'reconcileWorks / 0.1 University Library, University of Illinois' }, timeout=60)
+			if result.status_code == 429:
+				logger.debug(result.headers.get("Retry-After"))
+				time.sleep(60)
+				result = requests.get(url,timeout=60)
+
+			break
+		except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ValueError) as e:
+			if attempt_number < (MAX_RETRIES-1):
+				logger.warning(f"Request failed at attempt number {attempt_number}")
+				logger.warning(e)
+				time.sleep(2**attempt_number)
+			else:
+				logger.error("Request failed at final request")
+				logger.error(e)
+				try:
+					if result:
+						logger.warning(result.status_code)
+				except Exception as e2:
+					logger.error("ERROR logging request error")
+					logger.error(e2)
+					result = BrokenResponse()
 
 	return result
 
@@ -687,7 +697,7 @@ def init(args):
 		'disable_existing_loggers': False,
 		'formatters': {
 			'default': {
-				'format': '%(asctime)s [%(levelname)s] (%(threadName)-10s) %(message)s'
+				'format': '%(asctime)s [%(levelname)s] %(message)s'
 			}
 		},
 		'handlers': {
@@ -741,6 +751,7 @@ def init(args):
 def reconcileWorks(args):
 	cache_connection = init(args)
 	logger = logging.getLogger('reconciliation_logger')
+	start_time = datetime.datetime.now().time()
 	
 	parser = etree.XMLParser(remove_blank_text=True)
 	tree = etree.parse(args.input, parser)
@@ -832,6 +843,11 @@ def reconcileWorks(args):
 
 	with open(f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}.xml",'wb') as out_xml_file:
 		out_xml_file.write(etree.tostring(tree,pretty_print=True))
+
+	end_time = datetime.datetime.now().time()
+	logger.debug(f"Start time: {start_time}")
+	logger.debug(f"End time: {end_time}")
+	logger.debug(f"Run duration: {datetime.datetime.combine(datetime.date.min,end_time)-datetime.datetime.combine(datetime.date.min,start_time)}")
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
