@@ -1,4 +1,4 @@
-import argparse, sys, os, logging, logging.config, requests, csv, urllib.parse, copy, json, configparser, time, datetime, redis
+import argparse, sys, os, logging, logging.config, requests, csv, urllib.parse, copy, json, configparser, time, datetime, redis, traceback
 from lxml import etree
 from enum import Enum
 from redis.commands.json.path import Path
@@ -24,6 +24,16 @@ class Namespaces(str, Enum):
 	RDFS = "http://www.w3.org/2000/01/rdf-schema#"
 	MADSRDF = "http://www.loc.gov/mads/rdf/v1#"
 	MARCXML = "http://www.loc.gov/MARC21/slim"
+
+	def __str__(self):
+		return self.value
+
+class Mime(str, Enum):
+	HTML = "text/html"
+	BIBFRAMEXML = "application/rdf+xml"
+	MARCXML = "application/xml"
+	MADSXML = "application/rdf+xml"
+	JSON = "application/sparql-results+json"
 
 	def __str__(self):
 		return self.value
@@ -69,7 +79,7 @@ def normalizeVariant(variant):
 	elif isinstance(variant,unicode):
 		return variant.encode('utf-8').strip()
 
-def getRequest(url):
+def getRequest(url,response_type):
 	logger = logging.getLogger('reconciliation_logger')
 	MAX_RETRIES = 10
 
@@ -86,8 +96,18 @@ def getRequest(url):
 				time.sleep(60)
 				result = requests.get(url,timeout=60)
 
+			if result.status_code == 404:
+				break
+
+			if response_type not in result.headers['content-type']:
+				logger.warning(result.content)
+				logger.warning(url)
+				logger.warning(f"Expected {response_type}, but got {result.headers['content-type']}")
+				logger.warning(result.status_code)
+				raise TypeError('Response content-type does not match expected value')
+
 			break
-		except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ValueError) as e:
+		except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, ValueError, TypeError) as e:
 			if attempt_number < (MAX_RETRIES-1):
 				logger.warning(f"Request failed at attempt number {attempt_number}")
 				logger.warning(e)
@@ -235,7 +255,7 @@ def compareContributors(local_contributors,loc_contributors,cache_connection):
 						if request_uri.find('https') != 0:
 							request_uri.replace('http','https')
 
-						agent_tree = etree.XML(getRequest(f"{request_uri}.rdf").content)
+						agent_tree = etree.XML(getRequest(f"{request_uri}.rdf",Mime.MADSXML).content)
 						agent_label = agent_tree.xpath("/rdf:RDF/madsrdf:RWO/rdfs:label/text()",namespaces={"rdf": Namespaces.RDF,"rdfs": Namespaces.RDFS,"madsrdf": Namespaces.MADSRDF})
 
 						if len(agent_label) > 0:
@@ -384,7 +404,7 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 		matches = {}
 		hubs = {}
 		try:
-			results_tree = etree.HTML(getRequest(query_url).content)
+			results_tree = etree.HTML(getRequest(query_url,Mime.HTML).content)
 			result_table = results_tree.xpath("//table[@class='id-std']/tbody/tr")
 
 			while i < len(result_table):
@@ -399,7 +419,9 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 					logger.debug(f"\tFound {text_string}")
 					found_uri = 'http://id.loc.gov' + result_table[i].xpath("./td/a/@href")[0]
 					logger.debug(f"\t{found_uri}")
-					details_tree = etree.XML(getRequest(f"{found_uri.replace('http','https')}.bibframe.rdf").content)
+					details = getRequest(f"{found_uri.replace('http','https')}.bibframe.rdf",Mime.BIBFRAMEXML)
+					details_content = details.content
+					details_tree = etree.XML(details_content)
 					details_title = details_tree.xpath("/rdf:RDF/bf:Work/bf:title/bf:Title/bf:mainTitle/text()",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
 					logger.debug(f"\tTitle from record: {details_title}")
 					details_variant_title = details_tree.xpath("/rdf:RDF/bf:Work/bf:title/bf:VariantTitle/bf:mainTitle/text()",namespaces={"bf": Namespaces.BF,"rdf": Namespaces.RDF})
@@ -449,11 +471,20 @@ def searchForRecordLOC(placeholder_work_id,match_fields,resource,types,output_wr
 
 				i = i + 2
 
+		except etree.XMLSyntaxError as lxml_error:
+			logger.error(placeholder_work_id)
+			logger.error(text_string)
+			logger.error(query_url)
+			logger.error(lxml_error)
+			logger.error(traceback.format_exc())
+			logger.error(details_content)
+			logger.error(details.status_code)
 		except Exception as e:
 			logger.error(placeholder_work_id)
 			logger.error(text_string)
 			logger.error(query_url)
 			logger.error(e)
+			logger.error(traceback.format_exc())
 
 		results_by_title[text_string]['matches'] = matches
 		results_by_title[text_string]['hubs'] = hubs
@@ -509,7 +540,7 @@ WHERE
   ?contrib wdt:P10832 "{ID_STRING}"
 }}"""
 					sparql_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(SPARQL_QUERY)}"
-					query_results = json.loads(getRequest(sparql_query_url).content)
+					query_results = json.loads(getRequest(sparql_query_url,Mime.JSON).content)
 					logger.debug(f"\tContributor record from OCLC URI: {query_results}")
 					if len(query_results['results']['bindings']) > 0:
 						contributor_code = query_results['results']['bindings'][0]['contrib']['value']
@@ -519,7 +550,7 @@ WHERE
 			if not contributor_found:
 				ENCODED_CONTRIBUTOR = urllib.parse.quote_plus(marc_contributor['a'])
 				wikidata_query = f"{BASE_WIKIDATA_URL}?action=query&list=search&srsearch={ENCODED_CONTRIBUTOR}&format=json"
-				wikidata_search = json.loads(getRequest(wikidata_query).content)
+				wikidata_search = json.loads(getRequest(wikidata_query,Mime.JSON).content)
 				logger.debug(f"\tSerach results for contributor: {wikidata_search}")
 				if len(wikidata_search['query']['search']) > 0:
 					contributor_code = wikidata_search['query']['search'][0]['title']
@@ -536,7 +567,7 @@ WHERE
 }}"""
 				logger.debug(f"\tChecking contributor: {contributor_code}")
 				occupation_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(OCCUPATION_QUERY)}"
-				occupation_query_results = json.loads(getRequest(occupation_query_url).content)
+				occupation_query_results = json.loads(getRequest(occupation_query_url,Mime.JSON).content)
 				logger.debug(f"\tContributor occupation: {occupation_query_results}")
 				occupation_property = occupation_query_results['results']['bindings']
 				if len(occupation_property) > 0:
@@ -550,7 +581,7 @@ WHERE
   SERVICE wikibase:label {{ bd:serviceParam wikibase:language "[AUTO_LANGUAGE],mul,en". }}
 }}"""
 					works_query_url = f"{BASE_WIKIDATA_SPARQL_URL}?format=json&query={urllib.parse.quote_plus(WORKS_QUERY)}"
-					works_query_results = json.loads(getRequest(works_query_url).content)
+					works_query_results = json.loads(getRequest(works_query_url,Mime.JSON).content)
 					logger.debug(f"\tResults from query for contributor works: {works_query_results}")
 					if len(works_query_results['results']['bindings']) > 0:
 						for w in works_query_results['results']['bindings']:
@@ -630,7 +661,7 @@ def populateContributors(contributors):
 			best_match_score = None
 			best_match_url = None
 			try:
-				results_tree = etree.HTML(getRequest(query_url).content)
+				results_tree = etree.HTML(getRequest(query_url,Mime.HTML).content)
 				result_table = results_tree.xpath("//table[@class='id-std']/tbody/tr")
 				i = 0
 
@@ -638,7 +669,7 @@ def populateContributors(contributors):
 					logger.debug(f"\tFound {name}")
 					found_uri = 'http://id.loc.gov' + result_table[i].xpath("./td/a/@href")[0]
 					logger.debug(f"\t{found_uri}")
-					details_tree = etree.XML(getRequest(f"{found_uri.replace('http','https')}.marcxml.xml").content)
+					details_tree = etree.XML(getRequest(f"{found_uri.replace('http','https')}.marcxml.xml",Mime.MARCXML).content)
 					if search_on == 'PersonalName':
 						tag_check = "@tag='100' or @tag='400'"
 					else:
@@ -663,7 +694,10 @@ def populateContributors(contributors):
 					else:
 						i += 2
 			except Exception as e:
+				logger.error(name)
+				logger.error(query_url)
 				logger.error(e)
+				logger.error(traceback.format_exc())
 
 			if best_match_url:
 				name_mappings[name]['id'] = best_match_url
@@ -751,7 +785,7 @@ def init(args):
 def reconcileWorks(args):
 	cache_connection = init(args)
 	logger = logging.getLogger('reconciliation_logger')
-	start_time = datetime.datetime.now().time()
+	start_time = datetime.datetime.now()
 	
 	parser = etree.XMLParser(remove_blank_text=True)
 	tree = etree.parse(args.input, parser)
@@ -826,28 +860,31 @@ def reconcileWorks(args):
 					instance.xpath(f"./bf:instanceOf[@rdf:resource=\"{placeholder_work_id}\"]",namespaces={ "rdf": Namespaces.RDF, "bf": Namespaces.BF })[0].set(f"{{{Namespaces.RDF}}}resource",found_work_uri)
 
 			# Add a new Work for a found Hub that points back at the Work it was derived from
-			if found_hub_uri:
-				expression_of = etree.SubElement(work,f"{{{Namespaces.BF}}}expressionOf")
-				expression_of.set(f"{{{Namespaces.RDF}}}resource",found_hub_uri)
+			try:
+				if found_hub_uri:
+					expression_of = etree.SubElement(work,f"{{{Namespaces.BF}}}expressionOf")
+					expression_of.set(f"{{{Namespaces.RDF}}}resource",found_hub_uri)
 
-				new_hub = etree.SubElement(root,f"{{{Namespaces.BF}}}Work")
-				new_hub.set(f"{{{Namespaces.RDF}}}about",found_hub_uri)
-				hub_type = etree.SubElement(new_hub,f"{{{Namespaces.RDF}}}type")
-				hub_type.set(f"{{{Namespaces.RDF}}}resource","http://id.loc.gov/ontologies/bibframe/Hub")
-				hub_title = etree.SubElement(new_hub,f"{{{Namespaces.BF}}}title")
-				hub_Title = etree.SubElement(hub_title,f"{{{Namespaces.BF}}}Title")
-				hub_mainTitle = etree.SubElement(hub_Title,f"{{{Namespaces.BF}}}mainTitle")
-				hub_mainTitle.text = found_work_title
-				has_expression = etree.SubElement(new_hub,f"{{{Namespaces.BF}}}hasExpression")
-				has_expression.set(f"{{{Namespaces.RDF}}}resource", found_work_uri if found_work_uri else placeholder_work_id)
+					new_hub = etree.SubElement(root,f"{{{Namespaces.BF}}}Work")
+					new_hub.set(f"{{{Namespaces.RDF}}}about",found_hub_uri)
+					hub_type = etree.SubElement(new_hub,f"{{{Namespaces.RDF}}}type")
+					hub_type.set(f"{{{Namespaces.RDF}}}resource","http://id.loc.gov/ontologies/bibframe/Hub")
+					hub_title = etree.SubElement(new_hub,f"{{{Namespaces.BF}}}title")
+					hub_Title = etree.SubElement(hub_title,f"{{{Namespaces.BF}}}Title")
+					hub_mainTitle = etree.SubElement(hub_Title,f"{{{Namespaces.BF}}}mainTitle")
+					hub_mainTitle.text = found_work_title
+					has_expression = etree.SubElement(new_hub,f"{{{Namespaces.BF}}}hasExpression")
+					has_expression.set(f"{{{Namespaces.RDF}}}resource", found_work_uri if found_work_uri else placeholder_work_id)
+			except UnboundLocalError:
+				logger.debug("Wikidata search does not support hubs")
 
 	with open(f"{args.output}{SLASH}{args.input.rsplit('/',1)[1][:-4]}_{args.source}.xml",'wb') as out_xml_file:
 		out_xml_file.write(etree.tostring(tree,pretty_print=True))
 
-	end_time = datetime.datetime.now().time()
+	end_time = datetime.datetime.now()
 	logger.debug(f"Start time: {start_time}")
 	logger.debug(f"End time: {end_time}")
-	logger.debug(f"Run duration: {datetime.datetime.combine(datetime.date.min,end_time)-datetime.datetime.combine(datetime.date.min,start_time)}")
+	logger.debug(f"Run duration: {end_time-start_time}")
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
